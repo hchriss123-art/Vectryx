@@ -1,0 +1,212 @@
+/* app/globals.css */
+
+/* Basic reset */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+}
+
+/* Make pages look consistent */
+body {
+  background: #0b1220;
+  color: #0f172a;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica,
+    Arial, "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+/* ---------- Vectryx Navbar (responsive) ---------- */
+.vx-nav {
+  width: 100%;
+  background: #111827;
+  color: white;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.vx-nav-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.vx-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 180px;
+}
+
+.vx-links {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.vx-auth {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: flex-end;
+  min-width: 220px;
+}
+
+.vx-link {
+  color: rgba(255, 255, 255, 0.88);
+  text-decoration: none;
+  font-weight: 800;
+  font-size: 15px;
+  white-space: nowrap;
+}
+
+.vx-link:hover {
+  color: rgba(255, 255, 255, 1);
+}
+
+.vx-email {
+  color: rgba(255, 255, 255, 0.72);
+  font-weight: 700;
+  font-size: 14px;
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vx-btn {
+  display: inline-block;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  text-decoration: none;
+  font-weight: 900;
+  white-space: nowrap;
+  color: white;
+  background: transparent;
+}
+
+.vx-btn:hover {
+  border-color: rgba(255, 255, 255, 0.42);
+}
+
+.vx-mobile-btn {
+  display: none; /* shown only on mobile */
+  width: 42px;
+  height: 42px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: transparent;
+  color: white;
+  font-size: 20px;
+  line-height: 1;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.vx-mobile-menu {
+  display: none;
+  padding: 12px 18px 16px 18px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.vx-mobile-menu a {
+  display: block;
+  padding: 12px 10px;
+  border-radius: 12px;
+  text-decoration: none;
+  font-weight: 900;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.vx-mobile-menu a:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* --- Mobile rules --- */
+@media (max-width: 860px) {
+  .vx-links,
+  .vx-auth {
+    display: none;
+  }
+
+  .vx-mobile-btn {
+    display: inline-flex;
+  }
+
+  .vx-mobile-menu {
+    display: block;
+  }
+
+  .vx-email {
+    max-width: 100%;
+  }
+}
+/* =========================
+   Vectryx — Mobile Polish
+   ========================= */
+
+/* Prevent horizontal scrolling on mobile */
+html, body {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+/* Make tap targets feel premium */
+button, a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Mobile typography + spacing */
+@media (max-width: 640px) {
+  body {
+    font-size: 15px;
+  }
+
+  /* Make cards breathe a bit */
+  .vx-mobile-card {
+    padding: 16px !important;
+    border-radius: 16px !important;
+  }
+
+  /* Avoid long tickers/emails blowing up layout */
+  .vx-nowrap-ellipsis {
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    white-space: nowrap !important;
+    max-width: 100% !important;
+  }
+
+  /* Softer link color on dark bg */
+  .vx-soft-link {
+    color: rgba(56, 189, 248, 0.95) !important;
+    font-weight: 900 !important;
+  }
+}
+/* Mobile hero text polish */
+@media (max-width: 640px) {
+  .vx-hero-subtext {
+    font-size: 15px;
+    line-height: 1.55;
+  }
+}
+/* Hero subtext – desktop + mobile balance */
+.vx-hero-subtext {
+  font-size: 22px;
+}
+
+@media (max-width: 640px) {
+  .vx-hero-subtext {
+    font-size: 15px;
+    line-height: 1.55;
+  }
+}
