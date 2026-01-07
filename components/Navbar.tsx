@@ -2,11 +2,13 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabaseBrowser";
+import { useEffect, useMemo, useState } from "react";
+import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 import { BRAND } from "@/lib/brand";
 
 export default function Navbar() {
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+
   const [isAuthed, setIsAuthed] = useState(false);
   const [email, setEmail] = useState<string>("");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -16,6 +18,8 @@ export default function Navbar() {
     let mounted = true;
 
     const boot = async () => {
+      if (!supabase) return;
+
       const { data } = await supabase.auth.getSession();
       const user = data?.session?.user;
       if (!mounted) return;
@@ -25,6 +29,10 @@ export default function Navbar() {
     };
 
     boot();
+
+    if (!supabase) return () => {
+      mounted = false;
+    };
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       const user = session?.user;
@@ -36,7 +44,7 @@ export default function Navbar() {
       mounted = false;
       sub.subscription.unsubscribe();
     };
-  }, []);
+  }, [supabase]);
 
   // close menu when switching to desktop width
   useEffect(() => {
@@ -101,11 +109,7 @@ export default function Navbar() {
         </div>
 
         {/* Mobile hamburger */}
-        <button
-          className="vx-mobile-btn"
-          aria-label="Open menu"
-          onClick={() => setMenuOpen((v) => !v)}
-        >
+        <button className="vx-mobile-btn" aria-label="Open menu" onClick={() => setMenuOpen((v) => !v)}>
           ☰
         </button>
       </div>
@@ -130,7 +134,11 @@ export default function Navbar() {
             <Link href="/logout" onClick={() => setMenuOpen(false)}>
               Logout
             </Link>
-            {email ? <div className="vx-email" style={{ padding: "10px" }}>{email}</div> : null}
+            {email ? (
+              <div className="vx-email" style={{ padding: "10px" }}>
+                {email}
+              </div>
+            ) : null}
           </>
         ) : (
           <>

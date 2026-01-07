@@ -1,15 +1,22 @@
 "use client";
 
 import Navbar from "@/components/Navbar";
-import { useState } from "react";
-import { supabase } from "@/lib/supabaseBrowser";
+import { useMemo, useState } from "react";
+import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 
 export default function LoginPage() {
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [status, setStatus] = useState<string | null>(null);
 
   const login = async () => {
+    if (!supabase) {
+      setStatus("Supabase is not configured. Check environment variables.");
+      return;
+    }
+
     setStatus("Signing in...");
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) {
@@ -25,9 +32,7 @@ export default function LoginPage() {
       <Navbar />
       <div style={{ maxWidth: 520, margin: "0 auto", padding: "60px 24px" }}>
         <h1 style={{ fontSize: 36, marginBottom: 10 }}>Login</h1>
-        <p style={{ color: "#475569", marginBottom: 22 }}>
-          Sign in to access your dashboard.
-        </p>
+        <p style={{ color: "#475569", marginBottom: 22 }}>Sign in to access your dashboard.</p>
 
         <div style={{ display: "grid", gap: 12 }}>
           <input

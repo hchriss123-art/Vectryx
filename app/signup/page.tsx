@@ -1,15 +1,22 @@
 "use client";
 
 import Navbar from "@/components/Navbar";
-import { useState } from "react";
-import { supabase } from "@/lib/supabaseBrowser";
+import { useMemo, useState } from "react";
+import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 
 export default function SignupPage() {
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [status, setStatus] = useState<string | null>(null);
 
   const signup = async () => {
+    if (!supabase) {
+      setStatus("Supabase is not configured. Check environment variables.");
+      return;
+    }
+
     setStatus("Creating account...");
     const { error } = await supabase.auth.signUp({
       email,

@@ -3,7 +3,7 @@
 import Navbar from "@/components/Navbar";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { supabase } from "@/lib/supabaseBrowser";
+import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 
 type UserPrefs = {
   user_id: string;
@@ -19,6 +19,8 @@ type UserPrefs = {
 };
 
 export default function PreferencesPage() {
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -41,6 +43,12 @@ export default function PreferencesPage() {
     const boot = async () => {
       setLoading(true);
       setStatus(null);
+
+      if (!supabase) {
+        setStatus("Supabase is not configured. Check environment variables.");
+        setLoading(false);
+        return;
+      }
 
       const { data } = await supabase.auth.getSession();
       const user = data.session?.user;
@@ -73,10 +81,16 @@ export default function PreferencesPage() {
     };
 
     boot();
-  }, []);
+  }, [supabase]);
 
   const save = async () => {
     if (!userId) return;
+
+    if (!supabase) {
+      setStatus("Supabase is not configured. Check environment variables.");
+      return;
+    }
+
     setSaving(true);
     setStatus(null);
 
@@ -108,9 +122,22 @@ export default function PreferencesPage() {
     <main style={{ minHeight: "100vh", background: "#0b1220", color: "white" }}>
       <Navbar />
 
-      <section style={{ background: "linear-gradient(135deg, #0f172a, #020617)", borderBottom: "1px solid rgba(148,163,184,0.18)" }}>
+      <section
+        style={{
+          background: "linear-gradient(135deg, #0f172a, #020617)",
+          borderBottom: "1px solid rgba(148,163,184,0.18)",
+        }}
+      >
         <div style={{ maxWidth: 980, margin: "0 auto", padding: "38px 18px 18px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 12,
+              flexWrap: "wrap",
+            }}
+          >
             <h1 style={{ fontSize: "clamp(30px, 4.8vw, 44px)", margin: 0, fontWeight: 950, letterSpacing: -0.5 }}>
               Preferences
             </h1>
@@ -131,7 +158,15 @@ export default function PreferencesPage() {
             </Link>
           </div>
 
-          <p style={{ fontSize: "clamp(14px, 3.6vw, 16px)", opacity: 0.9, lineHeight: 1.6, marginTop: 12, maxWidth: 900 }}>
+          <p
+            style={{
+              fontSize: "clamp(14px, 3.6vw, 16px)",
+              opacity: 0.9,
+              lineHeight: 1.6,
+              marginTop: 12,
+              maxWidth: 900,
+            }}
+          >
             Set the watchlist and rules that determine what signals are worth your attention.
           </p>
         </div>
@@ -172,12 +207,7 @@ export default function PreferencesPage() {
 
         <Card title="Signal Thresholds">
           <Row label="Insider min USD">
-            <input
-              value={insiderMinUsd}
-              onChange={(e) => setInsiderMinUsd(Number(e.target.value))}
-              type="number"
-              style={inputText}
-            />
+            <input value={insiderMinUsd} onChange={(e) => setInsiderMinUsd(Number(e.target.value))} type="number" style={inputText} />
           </Row>
 
           <Row label="Alert frequency">
