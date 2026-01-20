@@ -40,6 +40,11 @@ const BASE_LIMIT_BY_PLAN: Record<Plan, number> = {
   MORPHEUS: 50, // keep internal value for DB compatibility (we brand as Vectryx tier)
 };
 
+function tickerHref(ticker: string) {
+  const t = (ticker || "").toUpperCase().trim();
+  return `/app/dashboard/${encodeURIComponent(t)}`;
+}
+
 export default function DashboardClient() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
 
@@ -134,6 +139,28 @@ export default function DashboardClient() {
 
   const planLabel = plan === "MORPHEUS" ? "VECTRYX" : plan;
 
+  // Pick a hero ticker:
+  // - If user has a watchlist, use the first ticker
+  // - Otherwise default to AAPL for demo
+  const heroTicker = (tickers[0] ?? "AAPL").toUpperCase();
+
+  // Build “recent signals” from watchlist (or demo fallback)
+  const recentItems = useMemo(() => {
+    const list = tickers.length ? tickers.slice(0, 5) : ["AAPL", "TSLA"];
+    return list.map((t, idx) => ({
+      companyName: t === "AAPL" ? "Apple Inc." : t === "TSLA" ? "Tesla, Inc." : `${t} (Company)`,
+      ticker: t,
+      signalType: idx % 2 === 0 ? "Executive Insider Purchase" : "Momentum Shift",
+      confidence: idx % 2 === 0 ? ("Strong" as const) : ("Moderate" as const),
+      detectedAgo: idx % 2 === 0 ? "2 hours ago" : "6 hours ago",
+      whyThisMatters:
+        idx % 2 === 0
+          ? "Multiple executives increased exposure during consolidation."
+          : "Price strength emerged after a multi-day base.",
+      href: tickerHref(t),
+    }));
+  }, [tickers]);
+
   return (
     <main style={{ minHeight: "100vh", background: "#0b1220" }}>
       <Navbar />
@@ -221,14 +248,15 @@ export default function DashboardClient() {
                 prefs
                   ? {
                       state: "active",
-                      companyName: "Apple Inc.",
-                      ticker: "AAPL",
+                      companyName: heroTicker === "AAPL" ? "Apple Inc." : `${heroTicker} (Company)`,
+                      ticker: heroTicker,
                       signalType: "Executive Insider Purchase",
                       confidence: "Strong",
                       detectedAgo: "2 hours ago",
                       recentActivity: "3 executive purchases",
                       whyThisMatters: "Executives increased exposure during a consolidation phase.",
-                      href: "/signals/aapl",
+                      // ✅ FIX: route that actually exists in your app
+                      href: tickerHref(heroTicker),
                     }
                   : {
                       state: "empty",
@@ -240,28 +268,7 @@ export default function DashboardClient() {
 
           {/* Recent Signals */}
           <div style={{ marginTop: 14 }}>
-            <RecentSignals
-              items={[
-                {
-                  companyName: "Apple Inc.",
-                  ticker: "AAPL",
-                  signalType: "Executive Insider Purchase",
-                  confidence: "Strong",
-                  detectedAgo: "2 hours ago",
-                  whyThisMatters: "Multiple executives increased exposure during consolidation.",
-                  href: "/signals/aapl",
-                },
-                {
-                  companyName: "Tesla, Inc.",
-                  ticker: "TSLA",
-                  signalType: "Momentum Shift",
-                  confidence: "Moderate",
-                  detectedAgo: "6 hours ago",
-                  whyThisMatters: "Price strength emerged after a multi-day base.",
-                  href: "/signals/tsla",
-                },
-              ]}
-            />
+            <RecentSignals items={recentItems} />
           </div>
 
           {/* Watchlist Coverage */}
