@@ -4,7 +4,7 @@ import Navbar from "@/components/Navbar";
 import { HeroSignalCard } from "@/components/HeroSignalCard";
 import { RecentSignals } from "@/components/RecentSignals";
 import { WatchlistCoverage } from "@/components/WatchlistCoverage";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 
 /* ---- types + constants ---- */
@@ -34,24 +34,42 @@ type UserPrefs = {
   updated_at?: string | null;
 };
 
+type AlertEvent = {
+  id: number;
+  user_id: string;
+  product: string | null;
+  event_type: string | null;
+  title: string | null;
+  body: string | null;
+  ticker: string | null;
+  severity: string | null;
+  occurred_at: string | null;
+  dedupe_key: string | null;
+  notify_status?: string | null;
+};
+
+type Confidence = "Very Strong" | "Strong" | "Moderate" | "Weak";
+
 const BASE_LIMIT_BY_PLAN: Record<Plan, number> = {
   FREE: 5,
   PRO: 15,
-  MORPHEUS: 50, // keep internal value for DB compatibility (we brand as Vectryx tier)
+  MORPHEUS: 50, // internal tier label (branded as Vectryx)
 };
 
-function tickerHref(ticker: string) {
-  const t = (ticker || "").toUpperCase().trim();
-  return `/app/dashboard/${encodeURIComponent(t)}`;
-}
+const POLL_MS = 12_000; // 12 seconds (tweak as you like)
+const RECENT_LIMIT = 25;
 
 export default function DashboardClient() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const pollTimer = useRef<number | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [prefs, setPrefs] = useState<UserPrefs | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  const [recentEvents, setRecentEvents] = useState<AlertEvent[]>([]);
+  const [lastPollAt, setLastPollAt] = useState<Date | null>(null);
 
   const plan: Plan = (profile?.plan as Plan) ?? "FREE";
   const extraBlocks = Number(profile?.extra_ticker_blocks ?? 0);
@@ -65,23 +83,94 @@ export default function DashboardClient() {
     return Math.min(100, Math.round((tickerCount / tickerLimit) * 100));
   }, [tickerCount, tickerLimit]);
 
-  // Make it feel “live”
-  const now = useMemo(() => new Date(), []);
-  const lastScan = useMemo(() => new Date(now.getTime() - 7 * 60 * 1000), [now]); // 7 min ago
-  const nextScan = useMemo(() => new Date(now.getTime() + 8 * 60 * 1000), [now]); // in 8 min
+  const planLabel = plan === "MORPHEUS" ? "VECTRYX" : plan;
 
-  // For WatchlistCoverage: if prefs exist, treat updated_at as last evaluation (good enough for demo)
+  // For WatchlistCoverage: last evaluation can be last prefs update (fine for now)
   const lastEvaluationAgo = useMemo(() => {
-    const t = prefs?.updated_at ? new Date(prefs.updated_at) : lastScan;
+    const t = prefs?.updated_at ? new Date(prefs.updated_at) : new Date(Date.now() - 10 * 60 * 1000);
     return timeAgo(t);
-  }, [prefs?.updated_at, lastScan]);
+  }, [prefs?.updated_at]);
+
+  const lastScanLabel = useMemo(() => {
+    if (!lastPollAt) return "—";
+    return fmtTime(lastPollAt);
+  }, [lastPollAt]);
+
+  const nextScanLabel = useMemo(() => {
+    if (!lastPollAt) return "—";
+    return fmtTime(new Date(lastPollAt.getTime() + POLL_MS));
+  }, [lastPollAt]);
+
+  const hero = useMemo(() => {
+    const e = recentEvents?.[0];
+    if (!e || !e.ticker) {
+      return prefs
+        ? ({ state: "empty", lastEvaluationAgo } as const)
+        : ({ state: "loading" } as const);
+    }
+
+    const ticker = (e.ticker || "").toUpperCase();
+    const companyName = ticker; // placeholder until you add a symbol->name mapping table
+    const signalType = e.title || e.event_type || "Signal Event";
+    const detectedAgo = e.occurred_at ? timeAgo(new Date(e.occurred_at)) : "moments ago";
+    const confidence = severityToConfidence(e.severity);
+
+    return {
+      state: "active",
+      companyName,
+      ticker,
+      signalType,
+      confidence,
+      detectedAgo,
+      recentActivity: e.product ? `Source: ${e.product}` : undefined,
+      whyThisMatters: e.body || undefined,
+      href: `/app/dashboard/${ticker}`,
+    } as const;
+  }, [recentEvents, prefs, lastEvaluationAgo]);
+
+  const recentSignalCards = useMemo(() => {
+    // Only show events that have a ticker
+    const cleaned = (recentEvents || []).filter((e) => !!e.ticker);
+
+    // De-dupe: ticker + event_type/title + occurred_at
+    const seen = new Set<string>();
+    const out: Array<{
+      companyName: string;
+      ticker: string;
+      signalType: string;
+      confidence: Confidence;
+      detectedAgo: string;
+      whyThisMatters?: string;
+      href: string;
+    }> = [];
+
+    for (const e of cleaned) {
+      const ticker = (e.ticker || "").toUpperCase();
+      const key = `${ticker}|${e.event_type || ""}|${e.title || ""}|${e.occurred_at || ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      out.push({
+        companyName: ticker,
+        ticker,
+        signalType: e.title || e.event_type || "Signal Event",
+        confidence: severityToConfidence(e.severity),
+        detectedAgo: e.occurred_at ? timeAgo(new Date(e.occurred_at)) : "moments ago",
+        whyThisMatters: e.body || undefined,
+        href: `/app/dashboard/${ticker}`,
+      });
+
+      if (out.length >= 5) break;
+    }
+
+    return out;
+  }, [recentEvents]);
 
   useEffect(() => {
     const boot = async () => {
       setLoading(true);
       setStatusMsg(null);
 
-      // Build-safe guard: if env vars aren't present, show a friendly message.
       if (!supabase) {
         setStatusMsg("Supabase is not configured. Check Vercel environment variables.");
         setLoading(false);
@@ -129,37 +218,63 @@ export default function DashboardClient() {
         setLoading(false);
         return;
       }
-
       setPrefs((prefRow as UserPrefs | null) ?? null);
+
       setLoading(false);
     };
 
     boot();
   }, [supabase]);
 
-  const planLabel = plan === "MORPHEUS" ? "VECTRYX" : plan;
+  // Poll alert_event (real data)
+  useEffect(() => {
+    const startPolling = async () => {
+      if (!supabase) return;
 
-  // Pick a hero ticker:
-  // - If user has a watchlist, use the first ticker
-  // - Otherwise default to AAPL for demo
-  const heroTicker = (tickers[0] ?? "AAPL").toUpperCase();
+      const { data: sessionData } = await supabase.auth.getSession();
+      const user = sessionData.session?.user;
+      if (!user) return;
 
-  // Build “recent signals” from watchlist (or demo fallback)
-  const recentItems = useMemo(() => {
-    const list = tickers.length ? tickers.slice(0, 5) : ["AAPL", "TSLA"];
-    return list.map((t, idx) => ({
-      companyName: t === "AAPL" ? "Apple Inc." : t === "TSLA" ? "Tesla, Inc." : `${t} (Company)`,
-      ticker: t,
-      signalType: idx % 2 === 0 ? "Executive Insider Purchase" : "Momentum Shift",
-      confidence: idx % 2 === 0 ? ("Strong" as const) : ("Moderate" as const),
-      detectedAgo: idx % 2 === 0 ? "2 hours ago" : "6 hours ago",
-      whyThisMatters:
-        idx % 2 === 0
-          ? "Multiple executives increased exposure during consolidation."
-          : "Price strength emerged after a multi-day base.",
-      href: tickerHref(t),
-    }));
-  }, [tickers]);
+      const runOnce = async () => {
+        // only poll if user has tickers (optional; you can remove this gate)
+        const filterTickers = tickers;
+
+        let q = supabase
+          .from("alert_event")
+          .select("id,user_id,product,event_type,title,body,ticker,severity,occurred_at,dedupe_key,notify_status")
+          .eq("user_id", user.id)
+          .order("occurred_at", { ascending: false })
+          .limit(RECENT_LIMIT);
+
+        if (filterTickers.length > 0) {
+          q = q.in("ticker", filterTickers);
+        }
+
+        const { data, error } = await q;
+        if (error) {
+          setStatusMsg(error.message);
+          return;
+        }
+
+        setRecentEvents((data as AlertEvent[]) ?? []);
+        setLastPollAt(new Date());
+      };
+
+      // initial fetch
+      await runOnce();
+
+      // interval
+      if (pollTimer.current) window.clearInterval(pollTimer.current);
+      pollTimer.current = window.setInterval(runOnce, POLL_MS);
+    };
+
+    startPolling();
+
+    return () => {
+      if (pollTimer.current) window.clearInterval(pollTimer.current);
+      pollTimer.current = null;
+    };
+  }, [supabase, tickers.join("|")]); // re-poll when watchlist changes
 
   return (
     <main style={{ minHeight: "100vh", background: "#0b1220" }}>
@@ -188,16 +303,13 @@ export default function DashboardClient() {
               </h1>
 
               <div style={{ opacity: 0.86, fontSize: "clamp(14px, 3.4vw, 16px)", lineHeight: 1.55, maxWidth: 820 }}>
-                High-conviction signals only. Vectryx protects attention before capital is deployed.
+                Live signals from Morpheus → Supabase → Vectryx.
               </div>
 
               <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
-                <SmallStat label="Last scan" value={fmtTime(lastScan)} />
-                <SmallStat label="Next scan" value={fmtTime(nextScan)} />
-                <SmallStat
-                  label="Preferences updated"
-                  value={prefs?.updated_at ? fmtTime(new Date(prefs.updated_at)) : "Not set"}
-                />
+                <SmallStat label="Last poll" value={lastScanLabel} />
+                <SmallStat label="Next poll" value={nextScanLabel} />
+                <SmallStat label="Preferences updated" value={prefs?.updated_at ? fmtTime(new Date(prefs.updated_at)) : "Not set"} />
               </div>
             </div>
           </div>
@@ -215,7 +327,7 @@ export default function DashboardClient() {
               title="Signal Engine"
               value="ACTIVE"
               subtitle="Watchlists • Alerts • Scoring"
-              meta={`Frequency: ${prefs?.alert_frequency ?? "—"}`}
+              meta={`Polling: every ${Math.round(POLL_MS / 1000)}s`}
             />
 
             <KpiCard
@@ -241,34 +353,14 @@ export default function DashboardClient() {
             />
           </div>
 
-          {/* Hero Signal */}
+          {/* Hero Signal (REAL) */}
           <div style={{ marginTop: 14 }}>
-            <HeroSignalCard
-              data={
-                prefs
-                  ? {
-                      state: "active",
-                      companyName: heroTicker === "AAPL" ? "Apple Inc." : `${heroTicker} (Company)`,
-                      ticker: heroTicker,
-                      signalType: "Executive Insider Purchase",
-                      confidence: "Strong",
-                      detectedAgo: "2 hours ago",
-                      recentActivity: "3 executive purchases",
-                      whyThisMatters: "Executives increased exposure during a consolidation phase.",
-                      // ✅ FIX: route that actually exists in your app
-                      href: tickerHref(heroTicker),
-                    }
-                  : {
-                      state: "empty",
-                      lastEvaluationAgo: timeAgo(lastScan),
-                    }
-              }
-            />
+            <HeroSignalCard data={hero as any} />
           </div>
 
-          {/* Recent Signals */}
+          {/* Recent Signals (REAL) */}
           <div style={{ marginTop: 14 }}>
-            <RecentSignals items={recentItems} />
+            <RecentSignals items={recentSignalCards} />
           </div>
 
           {/* Watchlist Coverage */}
@@ -285,7 +377,7 @@ export default function DashboardClient() {
       </div>
 
       <div style={{ maxWidth: 1120, margin: "0 auto", padding: "16px 18px 34px" }}>
-        {loading ? <div style={{ color: "rgba(255,255,255,0.72)" }}>Evaluating market activity…</div> : null}
+        {loading ? <div style={{ color: "rgba(255,255,255,0.72)" }}>Loading…</div> : null}
         {statusMsg ? <div style={statusBox}>{statusMsg}</div> : null}
       </div>
     </main>
@@ -306,7 +398,7 @@ function KpiCard(props: { title: string; value: string; subtitle: string; meta?:
       }}
     >
       <div style={{ fontSize: 12, opacity: 0.75 }}>{props.title}</div>
-      <div style={{ fontSize: 24, fontWeight: 900, marginTop: 6 }}>{props.value}</div>
+      <div style={{ fontSize: 24, fontWeight: 900, marginTop: 6, color: "white" }}>{props.value}</div>
       <div style={{ fontSize: 12, opacity: 0.78, marginTop: 6 }}>{props.subtitle}</div>
 
       {typeof props.progressPct === "number" && (
@@ -385,9 +477,7 @@ function parseTickers(raw: string) {
 }
 
 function channelsLabel(p: UserPrefs) {
-  const list = [p.notify_email ? "Email" : null, p.notify_push ? "Push" : null, p.notify_sms ? "SMS" : null].filter(
-    Boolean
-  ) as string[];
+  const list = [p.notify_email ? "Email" : null, p.notify_push ? "Push" : null, p.notify_sms ? "SMS" : null].filter(Boolean) as string[];
   return list.length ? list.join(", ") : "None";
 }
 
@@ -407,6 +497,14 @@ function timeAgo(d: Date) {
   if (h >= 1) return `${h} hour${h === 1 ? "" : "s"} ago`;
   if (m >= 1) return `${m} minute${m === 1 ? "" : "s"} ago`;
   return `${s} seconds ago`;
+}
+
+function severityToConfidence(sev?: string | null): Confidence {
+  const s = String(sev || "").toLowerCase();
+  if (s.includes("critical") || s.includes("very strong")) return "Very Strong";
+  if (s.includes("high") || s.includes("strong")) return "Strong";
+  if (s.includes("med") || s.includes("moderate")) return "Moderate";
+  return "Weak";
 }
 
 /** Styles */
