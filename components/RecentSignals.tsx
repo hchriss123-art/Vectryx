@@ -2,6 +2,15 @@
 
 type Confidence = "Very Strong" | "Strong" | "Moderate" | "Weak";
 
+function signalCategory(label: string) {
+  const s = label.toLowerCase();
+  if (s.includes("form 4") || s.includes("insider")) return "Insider";
+  if (s.includes("news")) return "News";
+  if (s.includes("move") || s.includes("price") || s.includes("volume")) return "Market";
+  if (s.includes("test")) return "Test";
+  return "Other";
+}
+
 type SignalCard = {
   companyName: string;
   ticker: string;
@@ -86,7 +95,25 @@ export function RecentSignals({ items }: { items: SignalCard[] }) {
                 {s.companyName} <span style={{ opacity: 0.6 }}>({s.ticker})</span>
               </div>
 
-              <div style={{ marginTop: 6, fontSize: 13, opacity: 0.9 }}>{s.signalType}</div>
+              <div style={{ marginTop: 6 }}>
+  <span
+    style={{
+      fontSize: 11,
+      fontWeight: 900,
+      padding: "3px 7px",
+      borderRadius: 999,
+      border: "1px solid rgba(148,163,184,0.35)",
+      background: "rgba(148,163,184,0.12)",
+      marginRight: 6,
+    }}
+  >
+    {signalCategory(s.signalType)}
+  </span>
+
+  <span style={{ fontSize: 13, opacity: 0.9 }}>
+    {s.signalType}
+  </span>
+</div>
 
               <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>
                 <div>

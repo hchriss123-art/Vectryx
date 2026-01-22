@@ -70,6 +70,7 @@ export default function DashboardClient() {
 
   const [recentEvents, setRecentEvents] = useState<AlertEvent[]>([]);
   const [lastPollAt, setLastPollAt] = useState<Date | null>(null);
+  const [tickerCoverage, setTickerCoverage] = useState<Record<string, AlertEvent | null>>({});
 
   const plan: Plan = (profile?.plan as Plan) ?? "FREE";
   const extraBlocks = Number(profile?.extra_ticker_blocks ?? 0);
@@ -257,6 +258,36 @@ export default function DashboardClient() {
         }
 
         setRecentEvents((data as AlertEvent[]) ?? []);
+        // Coverage fetch: pull enough rows to find the latest event per ticker (REAL data)
+const COVERAGE_LIMIT = 500;
+
+let cq = supabase
+  .from("alert_event")
+  .select("id,user_id,product,event_type,title,body,ticker,severity,occurred_at,dedupe_key,notify_status")
+  .eq("user_id", user.id)
+  .order("occurred_at", { ascending: false })
+  .limit(COVERAGE_LIMIT);
+
+if (filterTickers.length > 0) {
+  cq = cq.in("ticker", filterTickers);
+}
+
+const { data: coverageRows, error: coverageErr } = await cq;
+
+if (!coverageErr) {
+  // Initialize all tickers as "no alerts yet"
+  const map: Record<string, AlertEvent | null> = {};
+  for (const t of filterTickers) map[t] = null;
+
+  // Because rows are newest→oldest, the first row per ticker is the latest
+  for (const row of (coverageRows as AlertEvent[]) ?? []) {
+    const t = String(row.ticker ?? "").toUpperCase();
+    if (!t || !(t in map)) continue;
+    if (map[t] == null) map[t] = row;
+  }
+
+  setTickerCoverage(map);
+}
         setLastPollAt(new Date());
       };
 
@@ -362,6 +393,91 @@ export default function DashboardClient() {
           <div style={{ marginTop: 14 }}>
             <RecentSignals items={recentSignalCards} />
           </div>
+          {/* Tracked Tickers (REAL coverage of all tickers in plan/watchlist) */}
+<div style={{ marginTop: 14 }}>
+  <section
+    className="vx-mobile-card"
+    style={{
+      border: "1px solid rgba(148,163,184,0.25)",
+      borderRadius: 16,
+      background: "rgba(2, 6, 23, 0.35)",
+      padding: 18,
+      color: "white",
+    }}
+  >
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+      <div>
+        <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.75 }}>Tracked Tickers</div>
+        <div style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>
+          Showing {tickerCount} / {tickerLimit} tickers in your watchlist.
+        </div>
+      </div>
+
+      <a
+        href="/app/dashboard/watchlist"
+        style={{
+          color: "rgba(255,255,255,0.92)",
+          textDecoration: "none",
+          fontSize: 13,
+          fontWeight: 900,
+          border: "1px solid rgba(148,163,184,0.35)",
+          borderRadius: 12,
+          padding: "8px 12px",
+        }}
+      >
+        Watchlist →
+      </a>
+    </div>
+
+    {tickers.length === 0 ? (
+      <div style={{ marginTop: 12, opacity: 0.85 }}>No tickers in your watchlist yet.</div>
+    ) : (
+      <div
+        style={{
+          marginTop: 14,
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+          gap: 12,
+        }}
+      >
+        {tickers.map((t) => {
+          const last = tickerCoverage?.[t] ?? null;
+          const lastTime = last?.occurred_at ? new Date(last.occurred_at).toLocaleString() : null;
+          const sev = String(last?.severity ?? "").toUpperCase();
+
+          return (
+            <a
+              key={t}
+              href={`/app/dashboard/${t}`}
+              style={{
+                display: "block",
+                borderRadius: 14,
+                padding: 14,
+                background: "rgba(2, 6, 23, 0.25)",
+                border: "1px solid rgba(148,163,184,0.20)",
+                color: "rgba(255,255,255,0.92)",
+                textDecoration: "none",
+              }}
+            >
+              <div style={{ fontSize: 16, fontWeight: 950 }}>{t}</div>
+
+              {last ? (
+                <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85, lineHeight: 1.5 }}>
+                  <div style={{ fontWeight: 900 }}>Status: Active{sev ? ` • ${sev}` : ""}</div>
+                  <div style={{ marginTop: 4 }}>Last alert: {lastTime ?? "—"}</div>
+                </div>
+              ) : (
+                <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85, lineHeight: 1.5 }}>
+                  <div style={{ fontWeight: 900 }}>Status: No alerts yet</div>
+                </div>
+              )}
+            </a>
+          );
+        })}
+      </div>
+    )}
+  </section>
+</div>
 
           {/* Watchlist Coverage */}
           <div style={{ marginTop: 14 }}>

@@ -4,6 +4,7 @@ import Navbar from "@/components/Navbar";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
+import { useRouter } from "next/navigation";
 
 type UserPrefs = {
   user_id: string;
@@ -20,6 +21,7 @@ type UserPrefs = {
 
 export default function PreferencesPage() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const router = useRouter();
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -116,6 +118,10 @@ export default function PreferencesPage() {
 
     setStatus("Preferences saved ✅");
     setSaving(false);
+
+// immediately show live prices
+router.push("/app/dashboard/watchlist");
+
   };
 
   return (

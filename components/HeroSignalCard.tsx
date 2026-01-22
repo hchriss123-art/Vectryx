@@ -1,6 +1,14 @@
 "use client";
 
 type Confidence = "Very Strong" | "Strong" | "Moderate" | "Weak";
+function signalCategory(label: string) {
+  const s = label.toLowerCase();
+  if (s.includes("form 4") || s.includes("insider")) return "Insider (Form 4)";
+  if (s.includes("news") || s.includes("headline")) return "News / Catalyst";
+  if (s.includes("move") || s.includes("price") || s.includes("volume")) return "Market / Price Action";
+  if (s.includes("test")) return "Test";
+  return "Other";
+}
 
 type HeroSignal =
   | {
@@ -37,7 +45,7 @@ export function HeroSignalCard({ data }: { data: HeroSignal }) {
       <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.75 }}>
         {data.state === "loading"
           ? "Evaluating market activity…"
-          : "Highest-Confidence Signal"}
+          : "Highest Confidence Signal"}
       </div>
 
       {data.state === "active" && (
@@ -47,10 +55,26 @@ export function HeroSignalCard({ data }: { data: HeroSignal }) {
             <span style={{ opacity: 0.6 }}>({data.ticker})</span>
           </div>
 
-          <div style={{ marginTop: 6, fontSize: 15, opacity: 0.9 }}>
-            {data.signalType}
-          </div>
+<div style={{ marginTop: 6 }}>
+  <span
+    style={{
+      display: "inline-block",
+      fontSize: 11,
+      fontWeight: 900,
+      padding: "4px 8px",
+      borderRadius: 999,
+      border: "1px solid rgba(148,163,184,0.35)",
+      background: "rgba(148,163,184,0.12)",
+      marginRight: 8,
+    }}
+  >
+    Test
+  </span>
 
+  <span style={{ fontSize: 15, opacity: 0.9 }}>
+    {data.signalType}
+  </span>
+</div>
           <div style={{ marginTop: 12, fontSize: 13, opacity: 0.85 }}>
             <div>
               Confidence: <strong>{data.confidence}</strong>
@@ -77,7 +101,7 @@ export function HeroSignalCard({ data }: { data: HeroSignal }) {
             textDecoration: "none",
         }}
      >
-    View Signal →
+    View details →
       </a>
 
         </div>

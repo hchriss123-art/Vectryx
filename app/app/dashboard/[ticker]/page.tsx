@@ -20,7 +20,9 @@ type AlertEvent = {
   notify_status?: string | null;
 };
 
-export default function SignalDetailPage() {
+const POLL_MS = 12000;
+
+export default function TickerDetailPage() {
   const params = useParams();
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const ticker = String((params as any)?.ticker ?? "").toUpperCase();
@@ -30,27 +32,33 @@ export default function SignalDetailPage() {
   const [events, setEvents] = useState<AlertEvent[]>([]);
 
   useEffect(() => {
-    const boot = async () => {
+    let mounted = true;
+    let timer: any = null;
+
+    const runOnce = async () => {
+      if (!ticker) {
+        if (mounted) {
+          setStatus("Missing ticker in URL.");
+          setLoading(false);
+        }
+        return;
+      }
+
+      // optional: pause polling when tab hidden
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        return;
+      }
+
       setLoading(true);
       setStatus(null);
-
-      if (!ticker) {
-        setStatus("Missing ticker in URL.");
-        setLoading(false);
-        return;
-      }
-
-      if (!supabase) {
-        setStatus("Supabase is not configured. Check environment variables.");
-        setLoading(false);
-        return;
-      }
 
       // Require login
       const { data: sess, error: sessErr } = await supabase.auth.getSession();
       if (sessErr) {
-        setStatus(sessErr.message);
-        setLoading(false);
+        if (mounted) {
+          setStatus(sessErr.message);
+          setLoading(false);
+        }
         return;
       }
 
@@ -60,7 +68,6 @@ export default function SignalDetailPage() {
         return;
       }
 
-      // Pull recent events for this ticker (scoped to this user)
       const { data, error } = await supabase
         .from("alert_event")
         .select("id,user_id,product,event_type,title,body,ticker,severity,occurred_at,dedupe_key,notify_status")
@@ -68,6 +75,8 @@ export default function SignalDetailPage() {
         .eq("ticker", ticker)
         .order("occurred_at", { ascending: false })
         .limit(25);
+
+      if (!mounted) return;
 
       if (error) {
         setStatus(error.message);
@@ -79,7 +88,13 @@ export default function SignalDetailPage() {
       setLoading(false);
     };
 
-    boot();
+    runOnce();
+    timer = setInterval(runOnce, POLL_MS);
+
+    return () => {
+      mounted = false;
+      if (timer) clearInterval(timer);
+    };
   }, [supabase, ticker]);
 
   return (
@@ -95,35 +110,52 @@ export default function SignalDetailPage() {
         <div style={{ maxWidth: 980, margin: "0 auto", padding: "38px 18px 18px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <div>
-              <div style={{ fontSize: 12, opacity: 0.75 }}>Signal Detail</div>
+              <div style={{ fontSize: 12, opacity: 0.75 }}>Ticker Detail</div>
               <h1 style={{ fontSize: "clamp(30px, 4.8vw, 44px)", margin: "6px 0 0", fontWeight: 950, letterSpacing: -0.5 }}>
                 {ticker || "—"}
               </h1>
               <div style={{ marginTop: 8, opacity: 0.88, lineHeight: 1.6 }}>
-                Real events streamed from your Supabase <strong>alert_event</strong> table.
+                Recent alerts streamed from your Supabase <strong>alert_event</strong> table.
               </div>
             </div>
 
-            <Link
-              href="/app/dashboard"
-              style={{
-                background: "transparent",
-                color: "white",
-                textDecoration: "none",
-                fontWeight: 900,
-                padding: "10px 14px",
-                borderRadius: 14,
-                border: "1px solid rgba(255,255,255,0.28)",
-              }}
-            >
-              ← Back to Dashboard
-            </Link>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <Link
+                href="/app/dashboard/watchlist"
+                style={{
+                  background: "transparent",
+                  color: "white",
+                  textDecoration: "none",
+                  fontWeight: 900,
+                  padding: "10px 14px",
+                  borderRadius: 14,
+                  border: "1px solid rgba(255,255,255,0.22)",
+                }}
+              >
+                ← Watchlist
+              </Link>
+
+              <Link
+                href="/app/dashboard"
+                style={{
+                  background: "transparent",
+                  color: "white",
+                  textDecoration: "none",
+                  fontWeight: 900,
+                  padding: "10px 14px",
+                  borderRadius: 14,
+                  border: "1px solid rgba(255,255,255,0.28)",
+                }}
+              >
+                ← Dashboard
+              </Link>
+            </div>
           </div>
         </div>
       </section>
 
       <section style={{ maxWidth: 980, margin: "0 auto", padding: "18px 18px 44px" }}>
-        {loading ? <div style={{ opacity: 0.8 }}>Loading signal events…</div> : null}
+        {loading ? <div style={{ opacity: 0.8 }}>Loading alerts…</div> : null}
 
         {status ? (
           <div
@@ -149,7 +181,7 @@ export default function SignalDetailPage() {
             padding: 18,
           }}
         >
-          <div style={{ fontWeight: 950, fontSize: 16 }}>Latest Events</div>
+          <div style={{ fontWeight: 950, fontSize: 16 }}>Recent alerts</div>
           <div style={{ marginTop: 10, opacity: 0.85, lineHeight: 1.6 }}>
             Showing up to 25 recent events for <strong>{ticker}</strong>.
           </div>
@@ -171,7 +203,7 @@ export default function SignalDetailPage() {
                   }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 950, fontSize: 15 }}>{e.title || e.event_type || "Signal Event"}</div>
+                    <div style={{ fontWeight: 950, fontSize: 15 }}>{e.title || e.event_type || "Alert Event"}</div>
                     <div style={{ fontSize: 12, opacity: 0.75 }}>
                       {e.occurred_at ? new Date(e.occurred_at).toLocaleString() : "—"}
                     </div>
