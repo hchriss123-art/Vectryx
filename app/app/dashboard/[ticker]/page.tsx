@@ -44,6 +44,16 @@ export default function TickerDetailPage() {
         return;
       }
 
+      // ✅ Fix for Vercel/TypeScript build: supabase might be null
+      const sb = supabase;
+      if (!sb) {
+        if (mounted) {
+          setStatus("Supabase is not configured. Check environment variables.");
+          setLoading(false);
+        }
+        return;
+      }
+
       // optional: pause polling when tab hidden
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         return;
@@ -53,7 +63,7 @@ export default function TickerDetailPage() {
       setStatus(null);
 
       // Require login
-      const { data: sess, error: sessErr } = await supabase.auth.getSession();
+      const { data: sess, error: sessErr } = await sb.auth.getSession();
       if (sessErr) {
         if (mounted) {
           setStatus(sessErr.message);
@@ -68,7 +78,7 @@ export default function TickerDetailPage() {
         return;
       }
 
-      const { data, error } = await supabase
+      const { data, error } = await sb
         .from("alert_event")
         .select("id,user_id,product,event_type,title,body,ticker,severity,occurred_at,dedupe_key,notify_status")
         .eq("user_id", user.id)

@@ -65,12 +65,20 @@ export default function WatchlistClient() {
   const tickers = useMemo(() => parseTickers(prefs?.watchlist_text ?? ""), [prefs?.watchlist_text]);
   const planLabel = plan === "MORPHEUS" ? "VECTRYX" : plan;
 
+  // Load profile + preferences
   useEffect(() => {
     const boot = async () => {
       setLoading(true);
       setStatusMsg(null);
 
-      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+      const sb = supabase;
+      if (!sb) {
+        setStatusMsg("Supabase is not configured. Check environment variables.");
+        setLoading(false);
+        return;
+      }
+
+      const { data: sessionData, error: sessionErr } = await sb.auth.getSession();
       if (sessionErr) {
         setStatusMsg(sessionErr.message);
         setLoading(false);
@@ -83,7 +91,7 @@ export default function WatchlistClient() {
         return;
       }
 
-      const { data: prof, error: profErr } = await supabase
+      const { data: prof, error: profErr } = await sb
         .from("user_profile")
         .select("user_id, full_name, plan, extra_ticker_blocks")
         .eq("user_id", user.id)
@@ -96,7 +104,7 @@ export default function WatchlistClient() {
       }
       setProfile((prof as UserProfile | null) ?? null);
 
-      const { data: prefRow, error: prefErr } = await supabase
+      const { data: prefRow, error: prefErr } = await sb
         .from("user_preferences")
         .select("user_id, watchlist_text, updated_at")
         .eq("user_id", user.id)
@@ -115,40 +123,44 @@ export default function WatchlistClient() {
     boot();
   }, [supabase]);
 
+  // Poll quotes
   useEffect(() => {
-  const loadQuotes = async () => {
-    const { data: sessionData } = await supabase.auth.getSession();
-    const user = sessionData.session?.user;
-    if (!user) return;
+    const sb = supabase;
+    if (!sb) return;
 
-    const { data, error } = await supabase
-      .from("watchlist_quote")
-      .select("ticker, price, change_pct, created_at")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: false });
+    const loadQuotes = async () => {
+      const { data: sessionData, error: sessionErr } = await sb.auth.getSession();
+      if (sessionErr) return;
 
-    if (error) {
-      console.error("Quote load error:", error.message);
-      return;
-    }
+      const user = sessionData.session?.user;
+      if (!user) return;
 
-    // keep latest quote per ticker
-    const latest: Record<string, WatchlistQuote> = {};
-    for (const q of data ?? []) {
-      if (!latest[q.ticker]) {
-        latest[q.ticker] = q;
+      const { data, error } = await sb
+        .from("watchlist_quote")
+        .select("ticker, price, change_pct, created_at")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        // Don't spam the UI; log is enough for quotes
+        console.error("Quote load error:", error.message);
+        return;
       }
-    }
 
-    setQuotes(latest);
-  };
+      // keep latest quote per ticker
+      const latest: Record<string, WatchlistQuote> = {};
+      for (const q of (data as WatchlistQuote[]) ?? []) {
+        const key = String(q.ticker || "").toUpperCase();
+        if (!latest[key]) latest[key] = { ...q, ticker: key };
+      }
 
-  loadQuotes();
-  const id = window.setInterval(loadQuotes, 15_000); // every 15s (feels real-time)
-  return () => window.clearInterval(id);
-}, [supabase, tickers.join("|")]);
+      setQuotes(latest);
+    };
 
-
+    loadQuotes();
+    const id = window.setInterval(loadQuotes, 15_000);
+    return () => window.clearInterval(id);
+  }, [supabase, tickers.join("|")]);
 
   return (
     <main style={{ minHeight: "100vh", background: "#0b1220" }}>
@@ -241,31 +253,26 @@ export default function WatchlistClient() {
                 >
                   <div style={{ fontSize: 16, fontWeight: 950 }}>{t}</div>
 
-{quotes[t] ? (
-  <div style={{ marginTop: 6, fontSize: 13 }}>
-    <div>Price: ${quotes[t].price.toFixed(2)}</div>
-    {quotes[t].change_pct !== null && (
-      <div
-        style={{
-          color: quotes[t].change_pct >= 0 ? "#22c55e" : "#ef4444",
-          fontWeight: 900,
-        }}
-      >
-        {quotes[t].change_pct >= 0 ? "+" : ""}
-        {quotes[t].change_pct.toFixed(2)}%
-      </div>
-    )}
-  </div>
-) : (
-  <div style={{ marginTop: 6, fontSize: 12, opacity: 0.6 }}>
-    Price loading…
-  </div>
-)}
+                  {quotes[t] ? (
+                    <div style={{ marginTop: 6, fontSize: 13 }}>
+                      <div>Price: ${Number(quotes[t].price).toFixed(2)}</div>
+                      {quotes[t].change_pct !== null && (
+                        <div
+                          style={{
+                            color: quotes[t].change_pct >= 0 ? "#22c55e" : "#ef4444",
+                            fontWeight: 900,
+                          }}
+                        >
+                          {quotes[t].change_pct >= 0 ? "+" : ""}
+                          {Number(quotes[t].change_pct).toFixed(2)}%
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: 6, fontSize: 12, opacity: 0.6 }}>Price loading…</div>
+                  )}
 
-<div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>
-  Open details →
-</div>
-
+                  <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>Open details →</div>
                 </a>
               ))}
             </div>
