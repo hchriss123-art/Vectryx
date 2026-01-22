@@ -6,6 +6,7 @@ import { RecentSignals } from "@/components/RecentSignals";
 import { WatchlistCoverage } from "@/components/WatchlistCoverage";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
+import type { CSSProperties } from "react";
 
 /* ---- types + constants ---- */
 
@@ -625,7 +626,7 @@ function severityToConfidence(sev?: string | null): Confidence {
 
 /** Styles */
 
-const statusBox: React.CSSProperties = {
+const statusBox: CSSProperties = {
   marginTop: 12,
   padding: 12,
   borderRadius: 12,
