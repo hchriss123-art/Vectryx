@@ -50,13 +50,32 @@ function parseTickers(raw: string): string[] {
   return out;
 }
 
+function timeAgoShort(iso: string) {
+  const d = new Date(iso);
+  const diffMs = Date.now() - d.getTime();
+  const s = Math.max(1, Math.floor(diffMs / 1000));
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+
+  if (h >= 24) {
+    const days = Math.floor(h / 24);
+    return `${days}d ago`;
+  }
+  if (h >= 1) return `${h}h ago`;
+  if (m >= 1) return `${m}m ago`;
+  return `${s}s ago`;
+}
+
 export default function WatchlistClient() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [prefs, setPrefs] = useState<UserPrefs | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
   const [quotes, setQuotes] = useState<Record<string, WatchlistQuote>>({});
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
 
   const plan: Plan = (profile?.plan as Plan) ?? "FREE";
   const extraBlocks = Number(profile?.extra_ticker_blocks ?? 0);
@@ -128,39 +147,51 @@ export default function WatchlistClient() {
     const sb = supabase;
     if (!sb) return;
 
+    let timer: number | null = null;
+
     const loadQuotes = async () => {
-      const { data: sessionData, error: sessionErr } = await sb.auth.getSession();
-      if (sessionErr) return;
+      setRefreshing(true);
 
-      const user = sessionData.session?.user;
-      if (!user) return;
+      try {
+        const { data: sessionData, error: sessionErr } = await sb.auth.getSession();
+        if (sessionErr) return;
 
-      const { data, error } = await sb
-        .from("watchlist_quote")
-        .select("ticker, price, change_pct, created_at")
-        .eq("user_id", user.id)
-        .order("created_at", { ascending: false });
+        const user = sessionData.session?.user;
+        if (!user) return;
 
-      if (error) {
-        // Don't spam the UI; log is enough for quotes
-        console.error("Quote load error:", error.message);
-        return;
+        const { data, error } = await sb
+          .from("watchlist_quote")
+          .select("ticker, price, change_pct, created_at")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false });
+
+        if (error) {
+          console.error("Quote load error:", error.message);
+          return;
+        }
+
+        // keep latest quote per ticker
+        const latest: Record<string, WatchlistQuote> = {};
+        for (const q of (data as WatchlistQuote[]) ?? []) {
+          const key = String(q.ticker || "").toUpperCase();
+          if (!latest[key]) {
+            latest[key] = { ...q, ticker: key };
+          }
+        }
+
+        setQuotes(latest);
+      } finally {
+        setRefreshing(false);
       }
-
-      // keep latest quote per ticker
-      const latest: Record<string, WatchlistQuote> = {};
-      for (const q of (data as WatchlistQuote[]) ?? []) {
-        const key = String(q.ticker || "").toUpperCase();
-        if (!latest[key]) latest[key] = { ...q, ticker: key };
-      }
-
-      setQuotes(latest);
     };
 
     loadQuotes();
-    const id = window.setInterval(loadQuotes, 15_000);
-    return () => window.clearInterval(id);
-  }, [supabase, tickers.join("|")]);
+    timer = window.setInterval(loadQuotes, 15_000);
+
+    return () => {
+      if (timer) window.clearInterval(timer);
+    };
+  }, [supabase, refreshTick]);
 
   return (
     <main style={{ minHeight: "100vh", background: "#0b1220" }}>
@@ -169,9 +200,7 @@ export default function WatchlistClient() {
       <div style={{ background: "linear-gradient(135deg, #0f172a, #020617)", color: "white" }}>
         <div style={{ maxWidth: 1120, margin: "0 auto", padding: "28px 18px 22px" }}>
           <div style={{ fontSize: 12, opacity: 0.75 }}>Plan: {planLabel}</div>
-          <h1 style={{ fontSize: "clamp(28px, 4.6vw, 40px)", margin: "8px 0 6px 0", fontWeight: 950 }}>
-            Watchlist
-          </h1>
+          <h1 style={{ fontSize: "clamp(28px, 4.6vw, 40px)", margin: "8px 0 6px 0", fontWeight: 950 }}>Watchlist</h1>
           <div style={{ opacity: 0.86, fontSize: 14, lineHeight: 1.6, maxWidth: 820 }}>
             All tickers you’re tracking (dashboard surfaces only the highest-confidence signals).
           </div>
@@ -194,29 +223,50 @@ export default function WatchlistClient() {
             color: "rgba(255,255,255,0.92)",
           }}
         >
-          <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
             <div>
               <div style={{ fontSize: 14, fontWeight: 900 }}>Your tickers</div>
               <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
                 {tickers.length} / {tickerLimit} used
                 {prefs?.updated_at ? ` • Updated ${new Date(prefs.updated_at).toLocaleString()}` : ""}
+                {refreshing ? " • Refreshing…" : ""}
               </div>
             </div>
 
-            <a
-              href="/app/dashboard"
-              style={{
-                color: "rgba(255,255,255,0.92)",
-                textDecoration: "none",
-                fontSize: 13,
-                fontWeight: 900,
-                border: "1px solid rgba(148,163,184,0.35)",
-                borderRadius: 12,
-                padding: "8px 12px",
-              }}
-            >
-              Back to Dashboard →
-            </a>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                onClick={() => setRefreshTick((n) => n + 1)}
+                style={{
+                  background: "rgba(148,163,184,0.10)",
+                  color: "rgba(255,255,255,0.92)",
+                  border: "1px solid rgba(148,163,184,0.35)",
+                  borderRadius: 12,
+                  padding: "8px 12px",
+                  fontSize: 13,
+                  fontWeight: 900,
+                  cursor: "pointer",
+                }}
+                title="Refresh prices now"
+              >
+                Refresh prices ↻
+              </button>
+
+              <a
+                href="/app/dashboard"
+                style={{
+                  color: "rgba(255,255,255,0.92)",
+                  textDecoration: "none",
+                  fontSize: 13,
+                  fontWeight: 900,
+                  border: "1px solid rgba(148,163,184,0.35)",
+                  borderRadius: 12,
+                  padding: "8px 12px",
+                }}
+              >
+                Back to Dashboard →
+              </a>
+            </div>
           </div>
 
           {loading ? (
@@ -224,9 +274,7 @@ export default function WatchlistClient() {
           ) : tickers.length === 0 ? (
             <div style={{ marginTop: 14 }}>
               <div style={{ fontSize: 16, fontWeight: 900 }}>No tickers yet</div>
-              <div style={{ marginTop: 6, fontSize: 13, opacity: 0.8 }}>
-                Add tickers in Preferences to start tracking.
-              </div>
+              <div style={{ marginTop: 6, fontSize: 13, opacity: 0.8 }}>Add tickers in Preferences to start tracking.</div>
             </div>
           ) : (
             <div
@@ -237,44 +285,53 @@ export default function WatchlistClient() {
                 gap: 12,
               }}
             >
-              {tickers.map((t) => (
-                <a
-                  key={t}
-                  href={`/app/dashboard/${t}`}
-                  style={{
-                    display: "block",
-                    borderRadius: 14,
-                    padding: 14,
-                    background: "rgba(2, 6, 23, 0.25)",
-                    border: "1px solid rgba(148,163,184,0.20)",
-                    color: "rgba(255,255,255,0.92)",
-                    textDecoration: "none",
-                  }}
-                >
-                  <div style={{ fontSize: 16, fontWeight: 950 }}>{t}</div>
+              {tickers.map((t) => {
+                const q = quotes[t];
+                return (
+                  <a
+                    key={t}
+                    href={`/app/dashboard/${t}`}
+                    style={{
+                      display: "block",
+                      borderRadius: 14,
+                      padding: 14,
+                      background: "rgba(2, 6, 23, 0.25)",
+                      border: "1px solid rgba(148,163,184,0.20)",
+                      color: "rgba(255,255,255,0.92)",
+                      textDecoration: "none",
+                    }}
+                  >
+                    <div style={{ fontSize: 16, fontWeight: 950 }}>{t}</div>
 
-                  {quotes[t] ? (
-                    <div style={{ marginTop: 6, fontSize: 13 }}>
-                      <div>Price: ${Number(quotes[t].price).toFixed(2)}</div>
-                      {quotes[t].change_pct !== null && (
-                        <div
-                          style={{
-                            color: quotes[t].change_pct >= 0 ? "#22c55e" : "#ef4444",
-                            fontWeight: 900,
-                          }}
-                        >
-                          {quotes[t].change_pct >= 0 ? "+" : ""}
-                          {Number(quotes[t].change_pct).toFixed(2)}%
+                    {q ? (
+                      <div style={{ marginTop: 6, fontSize: 13 }}>
+                        <div>Price: ${Number(q.price).toFixed(2)}</div>
+
+                        <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
+                          Updated {timeAgoShort(q.created_at)}
                         </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div style={{ marginTop: 6, fontSize: 12, opacity: 0.6 }}>Price loading…</div>
-                  )}
 
-                  <div style={{ marginTop: 8, fontSize: 12, opacity: 0.8 }}>Open details →</div>
-                </a>
-              ))}
+                        {q.change_pct !== null && (
+                          <div
+                            style={{
+                              marginTop: 6,
+                              color: q.change_pct >= 0 ? "#22c55e" : "#ef4444",
+                              fontWeight: 900,
+                            }}
+                          >
+                            {q.change_pct >= 0 ? "+" : ""}
+                            {Number(q.change_pct).toFixed(2)}%
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div style={{ marginTop: 6, fontSize: 12, opacity: 0.6 }}>Price loading…</div>
+                    )}
+
+                    <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>Open details →</div>
+                  </a>
+                );
+              })}
             </div>
           )}
         </section>

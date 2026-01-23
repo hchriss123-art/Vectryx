@@ -51,18 +51,29 @@ type AlertEvent = {
 
 type Confidence = "Very Strong" | "Strong" | "Moderate" | "Weak";
 
+type WatchlistQuote = {
+  ticker: string;
+  price: number;
+  change_pct: number | null;
+  created_at: string;
+};
+
 const BASE_LIMIT_BY_PLAN: Record<Plan, number> = {
   FREE: 5,
   PRO: 15,
   MORPHEUS: 50, // internal tier label (branded as Vectryx)
 };
 
-const POLL_MS = 12_000; // 12 seconds (tweak as you like)
+const POLL_MS = 12_000; // alert_event polling
 const RECENT_LIMIT = 25;
+
+// quote polling fallback (realtime should make this mostly unnecessary, but it’s a safety net)
+const QUOTE_POLL_MS = 30_000;
 
 export default function DashboardClient() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const pollTimer = useRef<number | null>(null);
+  const quotePollTimer = useRef<number | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -71,7 +82,10 @@ export default function DashboardClient() {
 
   const [recentEvents, setRecentEvents] = useState<AlertEvent[]>([]);
   const [lastPollAt, setLastPollAt] = useState<Date | null>(null);
-  const [tickerCoverage, setTickerCoverage] = useState<Record<string, AlertEvent | null>>({});
+
+  // Watchlist quotes (for ticker tape + anywhere else)
+  const [quotes, setQuotes] = useState<Record<string, WatchlistQuote>>({});
+  const [quotesLastUpdated, setQuotesLastUpdated] = useState<Date | null>(null);
 
   const plan: Plan = (profile?.plan as Plan) ?? "FREE";
   const extraBlocks = Number(profile?.extra_ticker_blocks ?? 0);
@@ -106,9 +120,7 @@ export default function DashboardClient() {
   const hero = useMemo(() => {
     const e = recentEvents?.[0];
     if (!e || !e.ticker) {
-      return prefs
-        ? ({ state: "empty", lastEvaluationAgo } as const)
-        : ({ state: "loading" } as const);
+      return prefs ? ({ state: "empty", lastEvaluationAgo } as const) : ({ state: "loading" } as const);
     }
 
     const ticker = (e.ticker || "").toUpperCase();
@@ -131,10 +143,8 @@ export default function DashboardClient() {
   }, [recentEvents, prefs, lastEvaluationAgo]);
 
   const recentSignalCards = useMemo(() => {
-    // Only show events that have a ticker
     const cleaned = (recentEvents || []).filter((e) => !!e.ticker);
 
-    // De-dupe: ticker + event_type/title + occurred_at
     const seen = new Set<string>();
     const out: Array<{
       companyName: string;
@@ -168,18 +178,20 @@ export default function DashboardClient() {
     return out;
   }, [recentEvents]);
 
+  // BOOT: profile + prefs
   useEffect(() => {
     const boot = async () => {
       setLoading(true);
       setStatusMsg(null);
 
-      if (!supabase) {
+      const sb = supabase;
+      if (!sb) {
         setStatusMsg("Supabase is not configured. Check Vercel environment variables.");
         setLoading(false);
         return;
       }
 
-      const { data: sessionData, error: sessionErr } = await supabase.auth.getSession();
+      const { data: sessionData, error: sessionErr } = await sb.auth.getSession();
       if (sessionErr) {
         setStatusMsg(sessionErr.message);
         setLoading(false);
@@ -193,7 +205,7 @@ export default function DashboardClient() {
       }
 
       // Profile
-      const { data: prof, error: profErr } = await supabase
+      const { data: prof, error: profErr } = await sb
         .from("user_profile")
         .select("user_id, full_name, morpheus_access, stock_jockey_access, plan, extra_ticker_blocks")
         .eq("user_id", user.id)
@@ -207,7 +219,7 @@ export default function DashboardClient() {
       setProfile((prof as UserProfile | null) ?? null);
 
       // Preferences
-      const { data: prefRow, error: prefErr } = await supabase
+      const { data: prefRow, error: prefErr } = await sb
         .from("user_preferences")
         .select(
           "user_id, watchlist_text, insider_min_usd, alert_frequency, quiet_hours_start, quiet_hours_end, notify_email, notify_sms, notify_push, updated_at"
@@ -228,20 +240,20 @@ export default function DashboardClient() {
     boot();
   }, [supabase]);
 
-  // Poll alert_event (real data)
+  // Poll alert_event (REAL)
   useEffect(() => {
     const startPolling = async () => {
-      if (!supabase) return;
+      const sb = supabase;
+      if (!sb) return;
 
-      const { data: sessionData } = await supabase.auth.getSession();
+      const { data: sessionData } = await sb.auth.getSession();
       const user = sessionData.session?.user;
       if (!user) return;
 
       const runOnce = async () => {
-        // only poll if user has tickers (optional; you can remove this gate)
         const filterTickers = tickers;
 
-        let q = supabase
+        let q = sb
           .from("alert_event")
           .select("id,user_id,product,event_type,title,body,ticker,severity,occurred_at,dedupe_key,notify_status")
           .eq("user_id", user.id)
@@ -259,43 +271,11 @@ export default function DashboardClient() {
         }
 
         setRecentEvents((data as AlertEvent[]) ?? []);
-        // Coverage fetch: pull enough rows to find the latest event per ticker (REAL data)
-const COVERAGE_LIMIT = 500;
-
-let cq = supabase
-  .from("alert_event")
-  .select("id,user_id,product,event_type,title,body,ticker,severity,occurred_at,dedupe_key,notify_status")
-  .eq("user_id", user.id)
-  .order("occurred_at", { ascending: false })
-  .limit(COVERAGE_LIMIT);
-
-if (filterTickers.length > 0) {
-  cq = cq.in("ticker", filterTickers);
-}
-
-const { data: coverageRows, error: coverageErr } = await cq;
-
-if (!coverageErr) {
-  // Initialize all tickers as "no alerts yet"
-  const map: Record<string, AlertEvent | null> = {};
-  for (const t of filterTickers) map[t] = null;
-
-  // Because rows are newest→oldest, the first row per ticker is the latest
-  for (const row of (coverageRows as AlertEvent[]) ?? []) {
-    const t = String(row.ticker ?? "").toUpperCase();
-    if (!t || !(t in map)) continue;
-    if (map[t] == null) map[t] = row;
-  }
-
-  setTickerCoverage(map);
-}
         setLastPollAt(new Date());
       };
 
-      // initial fetch
       await runOnce();
 
-      // interval
       if (pollTimer.current) window.clearInterval(pollTimer.current);
       pollTimer.current = window.setInterval(runOnce, POLL_MS);
     };
@@ -306,7 +286,102 @@ if (!coverageErr) {
       if (pollTimer.current) window.clearInterval(pollTimer.current);
       pollTimer.current = null;
     };
-  }, [supabase, tickers.join("|")]); // re-poll when watchlist changes
+  }, [supabase, tickers.join("|")]);
+
+  // Quotes: initial load + fallback polling
+  useEffect(() => {
+    const sb = supabase;
+    if (!sb) return;
+
+    let cancelled = false;
+
+    const loadQuotesOnce = async () => {
+      const { data: sessionData } = await sb.auth.getSession();
+      const user = sessionData.session?.user;
+      if (!user || cancelled) return;
+
+      const { data, error } = await sb
+        .from("watchlist_quote")
+        .select("ticker, price, change_pct, created_at")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
+
+      if (error) return;
+
+      // keep latest per ticker
+      const latest: Record<string, WatchlistQuote> = {};
+      for (const row of (data as any[]) ?? []) {
+        const t = String(row.ticker || "").toUpperCase();
+        if (!t) continue;
+        if (!latest[t]) latest[t] = { ...row, ticker: t };
+      }
+
+      setQuotes(latest);
+      setQuotesLastUpdated(new Date());
+    };
+
+    loadQuotesOnce();
+
+    if (quotePollTimer.current) window.clearInterval(quotePollTimer.current);
+    quotePollTimer.current = window.setInterval(loadQuotesOnce, QUOTE_POLL_MS);
+
+    return () => {
+      cancelled = true;
+      if (quotePollTimer.current) window.clearInterval(quotePollTimer.current);
+      quotePollTimer.current = null;
+    };
+  }, [supabase, tickers.join("|")]);
+
+  // Quotes: REALTIME subscription (INSERT on watchlist_quote)
+  useEffect(() => {
+    const sb = supabase;
+    if (!sb) return;
+
+    let channel: any = null;
+    let cancelled = false;
+
+    const setup = async () => {
+      const { data: sessionData } = await sb.auth.getSession();
+      const user = sessionData.session?.user;
+      if (!user || cancelled) return;
+
+      channel = sb
+        .channel(`watchlist_quote_${user.id}`)
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "watchlist_quote", filter: `user_id=eq.${user.id}` },
+          (payload: any) => {
+            const row = payload?.new;
+            if (!row?.ticker) return;
+
+            const t = String(row.ticker).toUpperCase();
+
+            setQuotes((prev) => {
+              const existing = prev?.[t];
+              if (!existing) return { ...prev, [t]: { ...row, ticker: t } };
+
+              const prevTime = existing.created_at ? new Date(existing.created_at).getTime() : 0;
+              const newTime = row.created_at ? new Date(row.created_at).getTime() : Date.now();
+
+              if (newTime >= prevTime) {
+                return { ...prev, [t]: { ...row, ticker: t } };
+              }
+              return prev;
+            });
+
+            setQuotesLastUpdated(new Date());
+          }
+        )
+        .subscribe();
+    };
+
+    setup();
+
+    return () => {
+      cancelled = true;
+      if (channel) sb.removeChannel(channel);
+    };
+  }, [supabase]);
 
   return (
     <main style={{ minHeight: "100vh", background: "#0b1220" }}>
@@ -342,6 +417,7 @@ if (!coverageErr) {
                 <SmallStat label="Last poll" value={lastScanLabel} />
                 <SmallStat label="Next poll" value={nextScanLabel} />
                 <SmallStat label="Preferences updated" value={prefs?.updated_at ? fmtTime(new Date(prefs.updated_at)) : "Not set"} />
+                <SmallStat label="Quotes updated" value={quotesLastUpdated ? fmtTime(quotesLastUpdated) : "—"} />
               </div>
             </div>
           </div>
@@ -394,101 +470,10 @@ if (!coverageErr) {
           <div style={{ marginTop: 14 }}>
             <RecentSignals items={recentSignalCards} />
           </div>
-          {/* Tracked Tickers (REAL coverage of all tickers in plan/watchlist) */}
-<div style={{ marginTop: 14 }}>
-  <section
-    className="vx-mobile-card"
-    style={{
-      border: "1px solid rgba(148,163,184,0.25)",
-      borderRadius: 16,
-      background: "rgba(2, 6, 23, 0.35)",
-      padding: 18,
-      color: "white",
-    }}
-  >
-    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-      <div>
-        <div style={{ fontSize: 12, fontWeight: 900, opacity: 0.75 }}>Tracked Tickers</div>
-        <div style={{ marginTop: 6, fontSize: 13, opacity: 0.85 }}>
-          Showing {tickerCount} / {tickerLimit} tickers in your watchlist.
-        </div>
-      </div>
-
-      <a
-        href="/app/dashboard/watchlist"
-        style={{
-          color: "rgba(255,255,255,0.92)",
-          textDecoration: "none",
-          fontSize: 13,
-          fontWeight: 900,
-          border: "1px solid rgba(148,163,184,0.35)",
-          borderRadius: 12,
-          padding: "8px 12px",
-        }}
-      >
-        Watchlist →
-      </a>
-    </div>
-
-    {tickers.length === 0 ? (
-      <div style={{ marginTop: 12, opacity: 0.85 }}>No tickers in your watchlist yet.</div>
-    ) : (
-      <div
-        style={{
-          marginTop: 14,
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-          gap: 12,
-        }}
-      >
-        {tickers.map((t) => {
-          const last = tickerCoverage?.[t] ?? null;
-          const lastTime = last?.occurred_at ? new Date(last.occurred_at).toLocaleString() : null;
-          const sev = String(last?.severity ?? "").toUpperCase();
-
-          return (
-            <a
-              key={t}
-              href={`/app/dashboard/${t}`}
-              style={{
-                display: "block",
-                borderRadius: 14,
-                padding: 14,
-                background: "rgba(2, 6, 23, 0.25)",
-                border: "1px solid rgba(148,163,184,0.20)",
-                color: "rgba(255,255,255,0.92)",
-                textDecoration: "none",
-              }}
-            >
-              <div style={{ fontSize: 16, fontWeight: 950 }}>{t}</div>
-
-              {last ? (
-                <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85, lineHeight: 1.5 }}>
-                  <div style={{ fontWeight: 900 }}>Status: Active{sev ? ` • ${sev}` : ""}</div>
-                  <div style={{ marginTop: 4 }}>Last alert: {lastTime ?? "—"}</div>
-                </div>
-              ) : (
-                <div style={{ marginTop: 8, fontSize: 12, opacity: 0.85, lineHeight: 1.5 }}>
-                  <div style={{ fontWeight: 900 }}>Status: No alerts yet</div>
-                </div>
-              )}
-            </a>
-          );
-        })}
-      </div>
-    )}
-  </section>
-</div>
 
           {/* Watchlist Coverage */}
           <div style={{ marginTop: 14 }}>
-            <WatchlistCoverage
-              monitoredCount={tickerCount}
-              capacity={tickerLimit}
-              planLabel={planLabel}
-              lastEvaluationAgo={lastEvaluationAgo}
-              hrefManage="/preferences"
-            />
+            <WatchlistCoverage monitoredCount={tickerCount} capacity={tickerLimit} planLabel={planLabel} lastEvaluationAgo={lastEvaluationAgo} hrefManage="/preferences" />
           </div>
         </div>
       </div>
@@ -497,7 +482,77 @@ if (!coverageErr) {
         {loading ? <div style={{ color: "rgba(255,255,255,0.72)" }}>Loading…</div> : null}
         {statusMsg ? <div style={statusBox}>{statusMsg}</div> : null}
       </div>
+
+      {/* Bottom ticker tape */}
+      <TickerTape tickers={tickers} quotes={quotes} />
     </main>
+  );
+}
+
+/** Ticker tape */
+
+function TickerTape(props: { tickers: string[]; quotes: Record<string, WatchlistQuote> }) {
+  const items = (props.tickers || []).map((t) => {
+    const q = props.quotes?.[t];
+    const price = q?.price != null ? Number(q.price) : null;
+    const pct = q?.change_pct != null ? Number(q.change_pct) : null;
+    return { t, price, pct };
+  });
+
+  // duplicate to create a seamless loop
+  const loop = [...items, ...items];
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        left: 0,
+        right: 0,
+        bottom: 0,
+        height: 44,
+        borderTop: "1px solid rgba(148,163,184,0.20)",
+        background: "rgba(2, 6, 23, 0.92)",
+        backdropFilter: "blur(8px)",
+        overflow: "hidden",
+        zIndex: 50,
+      }}
+    >
+      <style>{`
+        @keyframes vx_tape_scroll {
+          0% { transform: translateX(0); }
+          100% { transform: translateX(-50%); }
+        }
+      `}</style>
+
+      <div
+        style={{
+          display: "flex",
+          width: "max-content",
+          gap: 22,
+          paddingLeft: 18,
+          alignItems: "center",
+          height: "100%",
+          whiteSpace: "nowrap",
+          animation: "vx_tape_scroll 35s linear infinite",
+        }}
+      >
+        {loop.map((x, i) => (
+          <div key={`${x.t}-${i}`} style={{ display: "flex", gap: 10, alignItems: "center", color: "rgba(255,255,255,0.92)" }}>
+            <span style={{ fontWeight: 950 }}>{x.t}</span>
+            <span style={{ opacity: 0.85 }}>
+              {x.price == null ? "—" : `$${x.price.toFixed(2)}`}
+            </span>
+            {x.pct == null ? (
+              <span style={{ opacity: 0.55 }}> </span>
+            ) : (
+              <span style={{ fontWeight: 900, opacity: 0.95 }}>
+                {x.pct >= 0 ? "▲" : "▼"} {Math.abs(x.pct).toFixed(2)}%
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -578,7 +633,7 @@ function SmallStat(props: { label: string; value: string }) {
 
 function parseTickers(raw: string) {
   const parts = raw
-    .split(",")
+    .split(/[\s,]+/g)
     .map((t) => t.trim().toUpperCase())
     .filter(Boolean);
 
