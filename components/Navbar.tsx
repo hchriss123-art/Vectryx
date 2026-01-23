@@ -30,9 +30,10 @@ export default function Navbar() {
 
     boot();
 
-    if (!supabase) return () => {
-      mounted = false;
-    };
+    if (!supabase)
+      return () => {
+        mounted = false;
+      };
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       const user = session?.user;
@@ -84,6 +85,7 @@ export default function Navbar() {
           <NavLink href="/philosophy" label="Philosophy" />
           {isAuthed && <NavLink href="/preferences" label="Preferences" />}
           {isAuthed && <NavLink href="/app/dashboard" label="Dashboard" />}
+          {isAuthed && <NavLink href="/app/dashboard/watchlist" label="Watchlist" />}
           {!isAuthed && <NavLink href="/login" label="Login" />}
         </div>
 
@@ -130,6 +132,9 @@ export default function Navbar() {
             </Link>
             <Link href="/app/dashboard" onClick={() => setMenuOpen(false)}>
               Dashboard
+            </Link>
+            <Link href="/app/dashboard/watchlist" onClick={() => setMenuOpen(false)}>
+              Watchlist
             </Link>
             <Link href="/logout" onClick={() => setMenuOpen(false)}>
               Logout
