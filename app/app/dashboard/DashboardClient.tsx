@@ -315,11 +315,10 @@ export default function WatchlistClient() {
                       <div style={{ marginTop: 6, fontSize: 13 }}>
                         <div>Price: {q.price === null ? "—" : `$${Number(q.price).toFixed(2)}`}</div>
 
-                        {ts ? (
-                          <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
-                            Updated {timeAgoShort(ts)}
-                          </div>
-                        ) : null}
+                        <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
+  Updated {timeAgoShort(q.updated_at || q.created_at || "")}
+</div>
+
 
                         {q.change_pct !== null && q.change_pct !== undefined && (
                           <div
