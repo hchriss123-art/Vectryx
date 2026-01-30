@@ -320,8 +320,9 @@ export default function WatchlistClient() {
 
                         {ts ? (
                           <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
-                            Updated {timeAgoShort(ts)}
-                          </div>
+  Updated {ts ? timeAgoShort(ts) : "—"}
+</div>
+
                         ) : (
                           <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
                             Updated —
