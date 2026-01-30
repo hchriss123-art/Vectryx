@@ -142,41 +142,43 @@ export default function DashboardClient() {
     } as const;
   }, [recentEvents, prefs, lastEvaluationAgo]);
 
-  const recentSignalCards = useMemo(() => {
-    const cleaned = (recentEvents || []).filter((e) => !!e.ticker);
+const recentSignalCards = useMemo(() => {
+  const cleaned = (recentEvents || []).filter((e) => !!e.ticker);
 
-    const seen = new Set<string>();
-    const out: Array<{
-      companyName: string;
-      ticker: string;
-      signalType: string;
-      confidence: Confidence;
-      detectedAgo: string;
-      whyThisMatters?: string;
-      href: string;
-    }> = [];
+  const seen = new Set<string>();
+  const out: Array<{
+    companyName: string;
+    ticker: string;
+    signalType: string;
+    confidence: Confidence;
+    detectedAgo: string;
+    whyThisMatters?: string;
+    href: string;
+    source?: string;
+  }> = [];
 
-    for (const e of cleaned) {
-      const ticker = (e.ticker || "").toUpperCase();
-      const key = `${ticker}|${e.event_type || ""}|${e.title || ""}|${e.occurred_at || ""}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
+  for (const e of cleaned) {
+    const ticker = (e.ticker || "").toUpperCase();
+    const key = `${ticker}|${e.event_type || ""}|${e.title || ""}|${e.occurred_at || ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
 
-      out.push({
-        companyName: ticker,
-        ticker,
-        signalType: e.title || e.event_type || "Signal Event",
-        confidence: severityToConfidence(e.severity),
-        detectedAgo: e.occurred_at ? timeAgo(new Date(e.occurred_at)) : "moments ago",
-        whyThisMatters: e.body || undefined,
-        href: `/app/dashboard/${ticker}`,
-      });
+    out.push({
+      companyName: ticker,
+      ticker,
+      signalType: e.title || e.event_type || "Signal Event",
+      confidence: severityToConfidence(e.severity),
+      detectedAgo: e.occurred_at ? timeAgo(new Date(e.occurred_at)) : "moments ago",
+      whyThisMatters: e.body || undefined,
+      href: `/app/dashboard/${ticker}`,
+      source: sourceLabel(e.product),
+    });
 
-      if (out.length >= 5) break;
-    }
+    if (out.length >= 5) break;
+  }
 
-    return out;
-  }, [recentEvents]);
+  return out;
+}, [recentEvents])
 
   // BOOT: profile + prefs
   useEffect(() => {
@@ -677,6 +679,22 @@ function severityToConfidence(sev?: string | null): Confidence {
   if (s.includes("high") || s.includes("strong")) return "Strong";
   if (s.includes("med") || s.includes("moderate")) return "Moderate";
   return "Weak";
+}
+function sourceLabel(product?: string | null) {
+  const p = String(product || "").trim().toLowerCase();
+
+  // Vectryx umbrella product name (what your table is using now)
+  if (p === "vectryx") return "Market/Price Action";
+
+  // If you later split producers, these will show correctly:
+  if (p === "morpheus") return "Insider";
+  if (p === "stockjockey" || p === "stock_jockey") return "Market/Price Action";
+  if (p === "watchlist") return "Watchlist";
+  if (p === "news") return "News";
+  if (p === "technical") return "Technical";
+
+  // default
+  return "General";
 }
 
 /** Styles */

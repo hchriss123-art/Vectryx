@@ -20,10 +20,15 @@ type UserProfile = {
   extra_ticker_blocks?: number;
 };
 
-type UserPrefs = {
+type WatchlistRow = {
+  id: number;
   user_id: string;
-  watchlist_text: string;
-  updated_at?: string | null;
+};
+
+type WatchlistItemRow = {
+  watchlist_id: number;
+  ticker: string;
+  created_at?: string | null;
 };
 
 const BASE_LIMIT_BY_PLAN: Record<Plan, number> = {
@@ -31,24 +36,6 @@ const BASE_LIMIT_BY_PLAN: Record<Plan, number> = {
   PRO: 15,
   MORPHEUS: 50,
 };
-
-function parseTickers(raw: string): string[] {
-  // tolerant parsing: commas, spaces, newlines
-  const parts = raw
-    .split(/[\s,]+/g)
-    .map((s) => s.trim().toUpperCase())
-    .filter(Boolean);
-
-  // de-dupe while preserving order
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const t of parts) {
-    if (seen.has(t)) continue;
-    seen.add(t);
-    out.push(t);
-  }
-  return out;
-}
 
 function timeAgoShort(iso: string) {
   const d = new Date(iso);
@@ -70,9 +57,13 @@ export default function WatchlistClient() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [prefs, setPrefs] = useState<UserPrefs | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
+  // ✅ single source of truth tickers
+  const [watchlistId, setWatchlistId] = useState<number | null>(null);
+  const [tickers, setTickers] = useState<string[]>([]);
+
+  // quotes
   const [quotes, setQuotes] = useState<Record<string, WatchlistQuote>>({});
   const [refreshTick, setRefreshTick] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -81,10 +72,9 @@ export default function WatchlistClient() {
   const extraBlocks = Number(profile?.extra_ticker_blocks ?? 0);
   const tickerLimit = (BASE_LIMIT_BY_PLAN[plan] ?? 5) + Math.max(0, extraBlocks) * 10;
 
-  const tickers = useMemo(() => parseTickers(prefs?.watchlist_text ?? ""), [prefs?.watchlist_text]);
   const planLabel = plan === "MORPHEUS" ? "VECTRYX" : plan;
 
-  // Load profile + preferences
+  // ✅ Load profile + watchlist_id + watchlist_item tickers
   useEffect(() => {
     const boot = async () => {
       setLoading(true);
@@ -110,6 +100,7 @@ export default function WatchlistClient() {
         return;
       }
 
+      // profile
       const { data: prof, error: profErr } = await sb
         .from("user_profile")
         .select("user_id, full_name, plan, extra_ticker_blocks")
@@ -123,26 +114,63 @@ export default function WatchlistClient() {
       }
       setProfile((prof as UserProfile | null) ?? null);
 
-      const { data: prefRow, error: prefErr } = await sb
-        .from("user_preferences")
-        .select("user_id, watchlist_text, updated_at")
+      // watchlist row (one per user)
+      const { data: wl, error: wlErr } = await sb
+        .from("watchlist")
+        .select("id, user_id")
         .eq("user_id", user.id)
         .maybeSingle();
 
-      if (prefErr) {
-        setStatusMsg(prefErr.message);
+      if (wlErr) {
+        setStatusMsg(wlErr.message);
         setLoading(false);
         return;
       }
-      setPrefs((prefRow as UserPrefs | null) ?? null);
 
+      const wlId = (wl as WatchlistRow | null)?.id ?? null;
+      setWatchlistId(wlId);
+
+      if (!wlId) {
+        // no watchlist created yet
+        setTickers([]);
+        setLoading(false);
+        return;
+      }
+
+      // watchlist_item tickers
+      const { data: items, error: itemsErr } = await sb
+        .from("watchlist_item")
+        .select("watchlist_id, ticker, created_at")
+        .eq("watchlist_id", wlId)
+        .order("ticker", { ascending: true });
+
+      if (itemsErr) {
+        setStatusMsg(itemsErr.message);
+        setLoading(false);
+        return;
+      }
+
+      const list = ((items as WatchlistItemRow[]) ?? [])
+        .map((r) => String(r.ticker || "").toUpperCase())
+        .filter(Boolean);
+
+      // de-dupe safety (should already be unique via constraint)
+      const seen = new Set<string>();
+      const deduped: string[] = [];
+      for (const t of list) {
+        if (seen.has(t)) continue;
+        seen.add(t);
+        deduped.push(t);
+      }
+
+      setTickers(deduped);
       setLoading(false);
     };
 
     boot();
   }, [supabase]);
 
-  // Poll quotes
+  // ✅ Poll quotes (still by user_id — because quotes table is per user)
   useEffect(() => {
     const sb = supabase;
     if (!sb) return;
@@ -170,13 +198,10 @@ export default function WatchlistClient() {
           return;
         }
 
-        // keep latest quote per ticker
         const latest: Record<string, WatchlistQuote> = {};
         for (const q of (data as WatchlistQuote[]) ?? []) {
           const key = String(q.ticker || "").toUpperCase();
-          if (!latest[key]) {
-            latest[key] = { ...q, ticker: key };
-          }
+          if (!latest[key]) latest[key] = { ...q, ticker: key };
         }
 
         setQuotes(latest);
@@ -200,7 +225,9 @@ export default function WatchlistClient() {
       <div style={{ background: "linear-gradient(135deg, #0f172a, #020617)", color: "white" }}>
         <div style={{ maxWidth: 1120, margin: "0 auto", padding: "28px 18px 22px" }}>
           <div style={{ fontSize: 12, opacity: 0.75 }}>Plan: {planLabel}</div>
-          <h1 style={{ fontSize: "clamp(28px, 4.6vw, 40px)", margin: "8px 0 6px 0", fontWeight: 950 }}>Watchlist</h1>
+          <h1 style={{ fontSize: "clamp(28px, 4.6vw, 40px)", margin: "8px 0 6px 0", fontWeight: 950 }}>
+            Watchlist
+          </h1>
           <div style={{ opacity: 0.86, fontSize: 14, lineHeight: 1.6, maxWidth: 820 }}>
             All tickers you’re tracking (dashboard surfaces only the highest-confidence signals).
           </div>
@@ -209,7 +236,15 @@ export default function WatchlistClient() {
 
       <div style={{ maxWidth: 1120, margin: "0 auto", padding: "18px" }}>
         {statusMsg && (
-          <div style={{ marginBottom: 12, padding: 12, borderRadius: 12, background: "rgba(239,68,68,0.12)", color: "white" }}>
+          <div
+            style={{
+              marginBottom: 12,
+              padding: 12,
+              borderRadius: 12,
+              background: "rgba(239,68,68,0.12)",
+              color: "white",
+            }}
+          >
             {statusMsg}
           </div>
         )}
@@ -228,8 +263,8 @@ export default function WatchlistClient() {
               <div style={{ fontSize: 14, fontWeight: 900 }}>Your tickers</div>
               <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
                 {tickers.length} / {tickerLimit} used
-                {prefs?.updated_at ? ` • Updated ${new Date(prefs.updated_at).toLocaleString()}` : ""}
                 {refreshing ? " • Refreshing…" : ""}
+                {watchlistId ? ` • Watchlist ID ${watchlistId}` : ""}
               </div>
             </div>
 
@@ -274,7 +309,9 @@ export default function WatchlistClient() {
           ) : tickers.length === 0 ? (
             <div style={{ marginTop: 14 }}>
               <div style={{ fontSize: 16, fontWeight: 900 }}>No tickers yet</div>
-              <div style={{ marginTop: 6, fontSize: 13, opacity: 0.8 }}>Add tickers in Preferences to start tracking.</div>
+              <div style={{ marginTop: 6, fontSize: 13, opacity: 0.8 }}>
+                Your watchlist is driven by <strong>watchlist_item</strong>. Add rows there (or wire Preferences to write to it).
+              </div>
             </div>
           ) : (
             <div

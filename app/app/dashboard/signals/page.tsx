@@ -3,7 +3,6 @@
 import Navbar from "@/components/Navbar";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 
 type AlertEvent = {
@@ -20,59 +19,39 @@ type AlertEvent = {
   notify_status?: string | null;
 };
 
-const POLL_MS = 12000;
+function safeUpper(s: any) {
+  const v = String(s ?? "").trim();
+  return v ? v.toUpperCase() : "";
+}
 
-export default function TickerDetailPage() {
-  const params = useParams();
+export default function SignalsPage() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
-  const ticker = String((params as any)?.ticker ?? "").toUpperCase();
-
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<string | null>(null);
   const [events, setEvents] = useState<AlertEvent[]>([]);
 
   useEffect(() => {
     let mounted = true;
-    let timer: any = null;
 
-    const runOnce = async () => {
-      if (!ticker) {
-        if (mounted) {
-          setStatus("Missing ticker in URL.");
-          setLoading(false);
-        }
-        return;
-      }
-
-      // ✅ Fix for Vercel/TypeScript build: supabase might be null
-      const sb = supabase;
-      if (!sb) {
-        if (mounted) {
-          setStatus("Supabase is not configured. Check environment variables.");
-          setLoading(false);
-        }
-        return;
-      }
-
-      // optional: pause polling when tab hidden
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-        return;
-      }
-
+    const boot = async () => {
       setLoading(true);
       setStatus(null);
 
-      // Require login
-      const { data: sess, error: sessErr } = await sb.auth.getSession();
-      if (sessErr) {
-        if (mounted) {
-          setStatus(sessErr.message);
-          setLoading(false);
-        }
+      const sb = supabase;
+      if (!sb) {
+        setStatus("Supabase is not configured. Check environment variables.");
+        setLoading(false);
         return;
       }
 
-      const user = sess.session?.user;
+      const { data: sessionData, error: sessionErr } = await sb.auth.getSession();
+      if (sessionErr) {
+        setStatus(sessionErr.message);
+        setLoading(false);
+        return;
+      }
+
+      const user = sessionData.session?.user;
       if (!user) {
         window.location.href = "/login";
         return;
@@ -82,9 +61,8 @@ export default function TickerDetailPage() {
         .from("alert_event")
         .select("id,user_id,product,event_type,title,body,ticker,severity,occurred_at,dedupe_key,notify_status")
         .eq("user_id", user.id)
-        .eq("ticker", ticker)
         .order("occurred_at", { ascending: false })
-        .limit(25);
+        .limit(200);
 
       if (!mounted) return;
 
@@ -98,14 +76,11 @@ export default function TickerDetailPage() {
       setLoading(false);
     };
 
-    runOnce();
-    timer = setInterval(runOnce, POLL_MS);
-
+    boot();
     return () => {
       mounted = false;
-      if (timer) clearInterval(timer);
     };
-  }, [supabase, ticker]);
+  }, [supabase]);
 
   return (
     <main style={{ minHeight: "100vh", background: "#0b1220", color: "white" }}>
@@ -120,12 +95,12 @@ export default function TickerDetailPage() {
         <div style={{ maxWidth: 980, margin: "0 auto", padding: "38px 18px 18px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
             <div>
-              <div style={{ fontSize: 12, opacity: 0.75 }}>Ticker Detail</div>
+              <div style={{ fontSize: 12, opacity: 0.75 }}>All Signals</div>
               <h1 style={{ fontSize: "clamp(30px, 4.8vw, 44px)", margin: "6px 0 0", fontWeight: 950, letterSpacing: -0.5 }}>
-                {ticker || "—"}
+                SIGNALS
               </h1>
               <div style={{ marginTop: 8, opacity: 0.88, lineHeight: 1.6 }}>
-                Recent alerts streamed from your Supabase <strong>alert_event</strong> table.
+                A list of your latest alerts from <strong>alert_event</strong> across all tickers.
               </div>
             </div>
 
@@ -165,7 +140,7 @@ export default function TickerDetailPage() {
       </section>
 
       <section style={{ maxWidth: 980, margin: "0 auto", padding: "18px 18px 44px" }}>
-        {loading ? <div style={{ opacity: 0.8 }}>Loading alerts…</div> : null}
+        {loading ? <div style={{ opacity: 0.8 }}>Loading signals…</div> : null}
 
         {status ? (
           <div
@@ -193,59 +168,63 @@ export default function TickerDetailPage() {
         >
           <div style={{ fontWeight: 950, fontSize: 16 }}>Recent alerts</div>
           <div style={{ marginTop: 10, opacity: 0.85, lineHeight: 1.6 }}>
-            Showing up to 25 recent events for <strong>{ticker}</strong>.
+            Showing up to <strong>200</strong> recent events across your tickers.
           </div>
 
           {!events || events.length === 0 ? (
             <div style={{ marginTop: 14, opacity: 0.86 }}>
-              No events yet for this ticker. When Morpheus writes new rows into <strong>alert_event</strong>, they will show here.
+              No events yet. When Morpheus writes rows into <strong>alert_event</strong>, they will show here.
             </div>
           ) : (
             <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
-              {events.map((e) => (
-                <div
-                  key={e.id}
-                  style={{
-                    border: "1px solid rgba(148,163,184,0.20)",
-                    background: "rgba(2, 6, 23, 0.25)",
-                    borderRadius: 14,
-                    padding: 14,
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                    <div style={{ fontWeight: 950, fontSize: 15 }}>{e.title || e.event_type || "Alert Event"}</div>
-                    <div style={{ fontSize: 12, opacity: 0.75 }}>
-                      {e.occurred_at ? new Date(e.occurred_at).toLocaleString() : "—"}
+              {events.map((e) => {
+                const t = safeUpper(e.ticker);
+                const href = t ? `/app/dashboard/${t}` : "/app/dashboard";
+
+                return (
+                  <a
+                    key={e.id}
+                    href={href}
+                    style={{
+                      display: "block",
+                      textDecoration: "none",
+                      color: "rgba(255,255,255,0.92)",
+                      border: "1px solid rgba(148,163,184,0.20)",
+                      background: "rgba(2, 6, 23, 0.25)",
+                      borderRadius: 14,
+                      padding: 14,
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                      <div style={{ fontWeight: 950, fontSize: 15 }}>
+                        {e.title || e.event_type || "Alert Event"}
+                        {t ? <span style={{ opacity: 0.65 }}> • {t}</span> : null}
+                      </div>
+                      <div style={{ fontSize: 12, opacity: 0.75 }}>
+                        {e.occurred_at ? new Date(e.occurred_at).toLocaleString() : "—"}
+                      </div>
                     </div>
-                  </div>
 
-                  {e.body ? <div style={{ marginTop: 8, opacity: 0.9, lineHeight: 1.6 }}>{e.body}</div> : null}
+                    {e.body ? <div style={{ marginTop: 8, opacity: 0.9, lineHeight: 1.6 }}>{e.body}</div> : null}
 
-                  <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, opacity: 0.85 }}>
-                    <Tag label={sourceLabel(e.product)} />
-                    <Tag label={`Severity: ${e.severity ?? "—"}`} />
-                    <Tag label={`Notify: ${e.notify_status ?? "—"}`} />
-                  </div>
-                </div>
-              ))}
+                    <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", fontSize: 12, opacity: 0.85 }}>
+                      <Tag label={`Severity: ${e.severity ?? "—"}`} />
+                      <Tag label={`Product: ${e.product ?? "—"}`} />
+                      <Tag label={`Notify: ${e.notify_status ?? "—"}`} />
+                    </div>
+
+                    <div style={{ marginTop: 10, fontSize: 13, fontWeight: 900 }}>
+                      {t ? "Open ticker details →" : "Back to dashboard →"}
+                    </div>
+                  </a>
+                );
+              })}
             </div>
           )}
         </div>
       </section>
     </main>
   );
-}
-
-function sourceLabel(product?: string | null) {
-  const p = String(product ?? "").toLowerCase();
-
-  if (p === "morpheus") return "Insider";
-  if (p === "stockjockey") return "Market";
-  if (p === "watchlist") return "Watchlist";
-  if (p === "news") return "News";
-  if (p === "technical") return "Technical";
-
-  return "General";
 }
 
 function Tag({ label }: { label: string }) {
