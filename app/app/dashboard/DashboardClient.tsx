@@ -34,11 +34,13 @@ const BASE_LIMIT_BY_PLAN: Record<Plan, number> = {
 };
 
 function parseTickers(raw: string): string[] {
+  // tolerant parsing: commas, spaces, newlines
   const parts = raw
     .split(/[\s,]+/g)
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean);
 
+  // de-dupe while preserving order
   const seen = new Set<string>();
   const out: string[] = [];
   for (const t of parts) {
@@ -50,16 +52,16 @@ function parseTickers(raw: string): string[] {
 }
 
 function timeAgoShort(iso: string) {
+  if (!iso) return "—";
   const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+
   const diffMs = Date.now() - d.getTime();
   const s = Math.max(1, Math.floor(diffMs / 1000));
   const m = Math.floor(s / 60);
   const h = Math.floor(m / 60);
 
-  if (h >= 24) {
-    const days = Math.floor(h / 24);
-    return `${days}d ago`;
-  }
+  if (h >= 24) return `${Math.floor(h / 24)}d ago`;
   if (h >= 1) return `${h}h ago`;
   if (m >= 1) return `${m}m ago`;
   return `${s}s ago`;
@@ -164,7 +166,6 @@ export default function WatchlistClient() {
         const user = sessionData.session?.user;
         if (!user) return;
 
-        // ✅ IMPORTANT: select updated_at and order by it
         const { data, error } = await sb
           .from("watchlist_quote")
           .select("ticker, price, change_pct, created_at, updated_at")
@@ -176,6 +177,7 @@ export default function WatchlistClient() {
           return;
         }
 
+        // keep latest quote per ticker
         const latest: Record<string, WatchlistQuote> = {};
         for (const q of (data as WatchlistQuote[]) ?? []) {
           const key = String(q.ticker || "").toUpperCase();
@@ -295,6 +297,7 @@ export default function WatchlistClient() {
               {tickers.map((t) => {
                 const q = quotes[t];
                 const ts = quoteTimestamp(q);
+
                 return (
                   <a
                     key={t}
@@ -315,10 +318,15 @@ export default function WatchlistClient() {
                       <div style={{ marginTop: 6, fontSize: 13 }}>
                         <div>Price: {q.price === null ? "—" : `$${Number(q.price).toFixed(2)}`}</div>
 
-                        <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
-  Updated {timeAgoShort(q.updated_at || q.created_at || "")}
-</div>
-
+                        {ts ? (
+                          <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
+                            Updated {timeAgoShort(ts)}
+                          </div>
+                        ) : (
+                          <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
+                            Updated —
+                          </div>
+                        )}
 
                         {q.change_pct !== null && q.change_pct !== undefined && (
                           <div
