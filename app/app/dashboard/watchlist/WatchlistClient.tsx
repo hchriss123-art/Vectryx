@@ -8,9 +8,10 @@ type Plan = "FREE" | "PRO" | "MORPHEUS";
 
 type WatchlistQuote = {
   ticker: string;
-  price: number;
+  price: number | null;
   change_pct: number | null;
-  created_at: string;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 type UserProfile = {
@@ -37,20 +38,26 @@ const BASE_LIMIT_BY_PLAN: Record<Plan, number> = {
   MORPHEUS: 50,
 };
 
-function timeAgoShort(iso: string) {
+function timeAgoShort(iso?: string | null) {
+  if (!iso) return "—";
   const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+
   const diffMs = Date.now() - d.getTime();
   const s = Math.max(1, Math.floor(diffMs / 1000));
   const m = Math.floor(s / 60);
   const h = Math.floor(m / 60);
 
-  if (h >= 24) {
-    const days = Math.floor(h / 24);
-    return `${days}d ago`;
-  }
+  if (h >= 24) return `${Math.floor(h / 24)}d ago`;
   if (h >= 1) return `${h}h ago`;
   if (m >= 1) return `${m}m ago`;
   return `${s}s ago`;
+}
+
+// ✅ pick updated_at if present, otherwise fall back to created_at
+function quoteTimestamp(q?: WatchlistQuote | null): string | null {
+  if (!q) return null;
+  return (q.updated_at || q.created_at || null) as string | null;
 }
 
 export default function WatchlistClient() {
@@ -70,7 +77,8 @@ export default function WatchlistClient() {
 
   const plan: Plan = (profile?.plan as Plan) ?? "FREE";
   const extraBlocks = Number(profile?.extra_ticker_blocks ?? 0);
-  const tickerLimit = (BASE_LIMIT_BY_PLAN[plan] ?? 5) + Math.max(0, extraBlocks) * 10;
+  const tickerLimit =
+    (BASE_LIMIT_BY_PLAN[plan] ?? 5) + Math.max(0, extraBlocks) * 10;
 
   const planLabel = plan === "MORPHEUS" ? "VECTRYX" : plan;
 
@@ -131,7 +139,6 @@ export default function WatchlistClient() {
       setWatchlistId(wlId);
 
       if (!wlId) {
-        // no watchlist created yet
         setTickers([]);
         setLoading(false);
         return;
@@ -154,7 +161,7 @@ export default function WatchlistClient() {
         .map((r) => String(r.ticker || "").toUpperCase())
         .filter(Boolean);
 
-      // de-dupe safety (should already be unique via constraint)
+      // de-dupe safety
       const seen = new Set<string>();
       const deduped: string[] = [];
       for (const t of list) {
@@ -170,7 +177,7 @@ export default function WatchlistClient() {
     boot();
   }, [supabase]);
 
-  // ✅ Poll quotes (still by user_id — because quotes table is per user)
+  // ✅ Poll quotes (by user_id) — FIXED to use updated_at and order by it
   useEffect(() => {
     const sb = supabase;
     if (!sb) return;
@@ -189,15 +196,16 @@ export default function WatchlistClient() {
 
         const { data, error } = await sb
           .from("watchlist_quote")
-          .select("ticker, price, change_pct, created_at")
+          .select("ticker, price, change_pct, created_at, updated_at")
           .eq("user_id", user.id)
-          .order("created_at", { ascending: false });
+          .order("updated_at", { ascending: false });
 
         if (error) {
           console.error("Quote load error:", error.message);
           return;
         }
 
+        // keep latest quote per ticker
         const latest: Record<string, WatchlistQuote> = {};
         for (const q of (data as WatchlistQuote[]) ?? []) {
           const key = String(q.ticker || "").toUpperCase();
@@ -324,6 +332,8 @@ export default function WatchlistClient() {
             >
               {tickers.map((t) => {
                 const q = quotes[t];
+                const ts = quoteTimestamp(q);
+
                 return (
                   <a
                     key={t}
@@ -342,13 +352,13 @@ export default function WatchlistClient() {
 
                     {q ? (
                       <div style={{ marginTop: 6, fontSize: 13 }}>
-                        <div>Price: ${Number(q.price).toFixed(2)}</div>
+                        <div>Price: {q.price === null ? "—" : `$${Number(q.price).toFixed(2)}`}</div>
 
                         <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
-                          Updated {timeAgoShort(q.created_at)}
+                          Updated {timeAgoShort(ts)}
                         </div>
 
-                        {q.change_pct !== null && (
+                        {q.change_pct !== null && q.change_pct !== undefined && (
                           <div
                             style={{
                               marginTop: 6,
