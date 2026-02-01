@@ -102,7 +102,7 @@ export default function TickerTape() {
           height: "100%",
           whiteSpace: "nowrap",
           willChange: "transform",
-          animation: "vectryxTickerScroll 35s linear infinite",
+          animation: "vectryxTickerScroll 20s linear infinite",
           paddingLeft: 16,
         }}
       >
