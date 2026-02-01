@@ -1,18 +1,11 @@
 "use client";
 
 import Navbar from "@/components/Navbar";
+import TickerTape from "@/components/TickerTape";
 import { useEffect, useMemo, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 
 type Plan = "FREE" | "PRO" | "MORPHEUS";
-
-type WatchlistQuote = {
-  ticker: string;
-  price: number | null;
-  change_pct: number | null;
-  created_at?: string | null;
-  updated_at?: string | null; // ✅ use this for “last updated”
-};
 
 type UserProfile = {
   user_id: string;
@@ -27,6 +20,14 @@ type UserPrefs = {
   updated_at?: string | null;
 };
 
+type WatchlistQuote = {
+  ticker: string;
+  price: number | null;
+  change_pct: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 const BASE_LIMIT_BY_PLAN: Record<Plan, number> = {
   FREE: 5,
   PRO: 15,
@@ -34,13 +35,11 @@ const BASE_LIMIT_BY_PLAN: Record<Plan, number> = {
 };
 
 function parseTickers(raw: string): string[] {
-  // tolerant parsing: commas, spaces, newlines
   const parts = raw
     .split(/[\s,]+/g)
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean);
 
-  // de-dupe while preserving order
   const seen = new Set<string>();
   const out: string[] = [];
   for (const t of parts) {
@@ -67,31 +66,31 @@ function timeAgoShort(iso: string) {
   return `${s}s ago`;
 }
 
-// ✅ pick updated_at if present, otherwise fall back to created_at
 function quoteTimestamp(q?: WatchlistQuote | null): string | null {
   if (!q) return null;
   return (q.updated_at || q.created_at || null) as string | null;
 }
 
-export default function WatchlistClient() {
+export default function DashboardClient() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+
   const [loading, setLoading] = useState(true);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [prefs, setPrefs] = useState<UserPrefs | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [prefs, setPrefs] = useState<UserPrefs | null>(null);
+
   const [quotes, setQuotes] = useState<Record<string, WatchlistQuote>>({});
-  const [refreshTick, setRefreshTick] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
 
   const plan: Plan = (profile?.plan as Plan) ?? "FREE";
   const extraBlocks = Number(profile?.extra_ticker_blocks ?? 0);
   const tickerLimit = (BASE_LIMIT_BY_PLAN[plan] ?? 5) + Math.max(0, extraBlocks) * 10;
-
-  const tickers = useMemo(() => parseTickers(prefs?.watchlist_text ?? ""), [prefs?.watchlist_text]);
   const planLabel = plan === "MORPHEUS" ? "VECTRYX" : plan;
 
-  // Load profile + preferences
+  const tickers = useMemo(() => parseTickers(prefs?.watchlist_text ?? ""), [prefs?.watchlist_text]);
+
+  // Boot: session + profile + preferences
   useEffect(() => {
     const boot = async () => {
       setLoading(true);
@@ -149,7 +148,7 @@ export default function WatchlistClient() {
     boot();
   }, [supabase]);
 
-  // Poll quotes
+  // Poll quotes (for the dashboard summary tiles)
   useEffect(() => {
     const sb = supabase;
     if (!sb) return;
@@ -177,13 +176,10 @@ export default function WatchlistClient() {
           return;
         }
 
-        // keep latest quote per ticker
         const latest: Record<string, WatchlistQuote> = {};
         for (const q of (data as WatchlistQuote[]) ?? []) {
           const key = String(q.ticker || "").toUpperCase();
-          if (!latest[key]) {
-            latest[key] = { ...q, ticker: key };
-          }
+          if (!latest[key]) latest[key] = { ...q, ticker: key };
         }
 
         setQuotes(latest);
@@ -198,7 +194,10 @@ export default function WatchlistClient() {
     return () => {
       if (timer) window.clearInterval(timer);
     };
-  }, [supabase, refreshTick]);
+  }, [supabase]);
+
+  // Pick a small set for the dashboard tiles (show up to 8)
+  const dashboardTickers = useMemo(() => tickers.slice(0, 8), [tickers]);
 
   return (
     <main style={{ minHeight: "100vh", background: "#0b1220" }}>
@@ -208,10 +207,10 @@ export default function WatchlistClient() {
         <div style={{ maxWidth: 1120, margin: "0 auto", padding: "28px 18px 22px" }}>
           <div style={{ fontSize: 12, opacity: 0.75 }}>Plan: {planLabel}</div>
           <h1 style={{ fontSize: "clamp(28px, 4.6vw, 40px)", margin: "8px 0 6px 0", fontWeight: 950 }}>
-            Watchlist
+            Dashboard
           </h1>
           <div style={{ opacity: 0.86, fontSize: 14, lineHeight: 1.6, maxWidth: 820 }}>
-            All tickers you’re tracking (dashboard surfaces only the highest-confidence signals).
+            Live quotes are flowing from your Supabase <strong>watchlist_quote</strong> table.
           </div>
         </div>
       </div>
@@ -234,35 +233,17 @@ export default function WatchlistClient() {
         >
           <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
             <div>
-              <div style={{ fontSize: 14, fontWeight: 900 }}>Your tickers</div>
+              <div style={{ fontSize: 14, fontWeight: 900 }}>Overview</div>
               <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
-                {tickers.length} / {tickerLimit} used
-                {prefs?.updated_at ? ` • Updated ${new Date(prefs.updated_at).toLocaleString()}` : ""}
+                {tickers.length} tickers tracked • Limit {tickerLimit}
+                {prefs?.updated_at ? ` • Preferences updated ${new Date(prefs.updated_at).toLocaleString()}` : ""}
                 {refreshing ? " • Refreshing…" : ""}
               </div>
             </div>
 
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button
-                type="button"
-                onClick={() => setRefreshTick((n) => n + 1)}
-                style={{
-                  background: "rgba(148,163,184,0.10)",
-                  color: "rgba(255,255,255,0.92)",
-                  border: "1px solid rgba(148,163,184,0.35)",
-                  borderRadius: 12,
-                  padding: "8px 12px",
-                  fontSize: 13,
-                  fontWeight: 900,
-                  cursor: "pointer",
-                }}
-                title="Refresh prices now"
-              >
-                Refresh prices ↻
-              </button>
-
               <a
-                href="/app/dashboard"
+                href="/app/dashboard/watchlist"
                 style={{
                   color: "rgba(255,255,255,0.92)",
                   textDecoration: "none",
@@ -273,13 +254,13 @@ export default function WatchlistClient() {
                   padding: "8px 12px",
                 }}
               >
-                Back to Dashboard →
+                Open Watchlist →
               </a>
             </div>
           </div>
 
           {loading ? (
-            <div style={{ marginTop: 14, opacity: 0.75 }}>Loading watchlist…</div>
+            <div style={{ marginTop: 14, opacity: 0.75 }}>Loading dashboard…</div>
           ) : tickers.length === 0 ? (
             <div style={{ marginTop: 14 }}>
               <div style={{ fontSize: 16, fontWeight: 900 }}>No tickers yet</div>
@@ -290,11 +271,11 @@ export default function WatchlistClient() {
               style={{
                 marginTop: 14,
                 display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
                 gap: 12,
               }}
             >
-              {tickers.map((t) => {
+              {dashboardTickers.map((t) => {
                 const q = quotes[t];
                 const ts = quoteTimestamp(q);
 
@@ -312,47 +293,29 @@ export default function WatchlistClient() {
                       textDecoration: "none",
                     }}
                   >
-                    <div style={{ fontSize: 16, fontWeight: 950 }}>{t}</div>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+                      <div style={{ fontSize: 18, fontWeight: 950 }}>{t}</div>
+                      {q?.change_pct !== null && q?.change_pct !== undefined ? (
+                        <div
+                          style={{
+                            fontWeight: 950,
+                            color: q.change_pct >= 0 ? "#22c55e" : "#ef4444",
+                            fontSize: 14,
+                          }}
+                        >
+                          {q.change_pct >= 0 ? "+" : ""}
+                          {Number(q.change_pct).toFixed(2)}%
+                        </div>
+                      ) : null}
+                    </div>
 
-                    {q ? (
-                      <div style={{ marginTop: 6, fontSize: 13 }}>
-                        <div>Price: {q.price === null ? "—" : `$${Number(q.price).toFixed(2)}`}</div>
+                    <div style={{ marginTop: 8, fontSize: 13, opacity: 0.9 }}>
+                      Price: {q?.price === null || q?.price === undefined ? "—" : `$${Number(q.price).toFixed(2)}`}
+                    </div>
 
-                        {ts ? (
- <>
-  <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
-    Updated {ts ? timeAgoShort(ts) : "—"}
-  </div>
-
-  {ts && (
-    <div style={{ marginTop: 2, fontSize: 12, opacity: 0.6 }}>
-      {new Date(ts).toLocaleString()}
-    </div>
-  )}
-</>
-
-                        ) : (
-                          <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
-                            Updated —
-                          </div>
-                        )}
-
-                        {q.change_pct !== null && q.change_pct !== undefined && (
-                          <div
-                            style={{
-                              marginTop: 6,
-                              color: q.change_pct >= 0 ? "#22c55e" : "#ef4444",
-                              fontWeight: 900,
-                            }}
-                          >
-                            {q.change_pct >= 0 ? "+" : ""}
-                            {Number(q.change_pct).toFixed(2)}%
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div style={{ marginTop: 6, fontSize: 12, opacity: 0.6 }}>Price loading…</div>
-                    )}
+                    <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
+                      Updated {ts ? timeAgoShort(ts) : "—"}
+                    </div>
 
                     <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>Open details →</div>
                   </a>
@@ -360,8 +323,20 @@ export default function WatchlistClient() {
               })}
             </div>
           )}
+
+          {tickers.length > 8 ? (
+            <div style={{ marginTop: 14, fontSize: 12, opacity: 0.7 }}>
+              Showing 8 of {tickers.length}. View all in{" "}
+              <a href="/app/dashboard/watchlist" style={{ color: "rgba(255,255,255,0.92)", fontWeight: 900 }}>
+                Watchlist
+              </a>
+              .
+            </div>
+          ) : null}
         </section>
       </div>
+      <div style={{ height: 52 }} /> {/* spacer so content doesn't hide behind tape */}
+      <TickerTape />
     </main>
   );
 }
