@@ -3,83 +3,59 @@
 import { useEffect, useMemo, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 
-type WatchlistQuote = {
-  ticker: string;
-  price: number | null;
-  change_pct: number | null;
-  updated_at?: string | null;
-  created_at?: string | null;
+type Props = {
+  speedSeconds?: number; // lower = faster
 };
 
-function fmtPrice(n: number | null | undefined) {
-  if (n === null || n === undefined) return "—";
-  try {
-    return `$${Number(n).toFixed(2)}`;
-  } catch {
-    return "—";
+function parseTickers(raw: string): string[] {
+  if (!raw) return [];
+  const parts = raw
+    .split(/[\s,]+/g)
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of parts) {
+    if (seen.has(t)) continue;
+    seen.add(t);
+    out.push(t);
   }
+  return out;
 }
 
-export default function TickerTape() {
+export default function TickerTape({ speedSeconds = 20 }: Props) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
-  const [items, setItems] = useState<WatchlistQuote[]>([]);
-  const [ready, setReady] = useState(false);
+  const [symbols, setSymbols] = useState<string[]>([]);
 
   useEffect(() => {
-    const sb = supabase;
-    if (!sb) return;
-
-    let timer: number | null = null;
-
     const load = async () => {
-      try {
-        const { data: sessionData, error: sessionErr } = await sb.auth.getSession();
-        if (sessionErr) return;
+      const sb = supabase;
+      if (!sb) return;
 
-        const user = sessionData.session?.user;
-        if (!user) return;
+      const { data: sessionData } = await sb.auth.getSession();
+      const user = sessionData.session?.user;
+      if (!user) return;
 
-        // Pull latest quotes
-        const { data, error } = await sb
-          .from("watchlist_quote")
-          .select("ticker, price, change_pct, updated_at, created_at")
-          .eq("user_id", user.id)
-          .order("updated_at", { ascending: false });
+      const { data } = await sb
+        .from("user_preferences")
+        .select("watchlist_text")
+        .eq("user_id", user.id)
+        .maybeSingle();
 
-        if (error) return;
-
-        // Deduplicate to latest per ticker
-        const seen = new Set<string>();
-        const out: WatchlistQuote[] = [];
-        for (const q of (data as WatchlistQuote[]) ?? []) {
-          const tk = String(q.ticker || "").toUpperCase();
-          if (!tk) continue;
-          if (seen.has(tk)) continue;
-          seen.add(tk);
-          out.push({ ...q, ticker: tk });
-        }
-
-        setItems(out);
-        setReady(true);
-      } catch {
-        // ignore
-      }
+      const tickers = parseTickers((data as any)?.watchlist_text || "");
+      setSymbols(tickers);
     };
 
     load();
-    timer = window.setInterval(load, 15_000);
-
-    return () => {
-      if (timer) window.clearInterval(timer);
-    };
   }, [supabase]);
 
-  // If nothing yet, don't render (prevents ugly blank bar)
-  if (!ready || items.length === 0) return null;
+  const tape = useMemo(() => {
+    const base = symbols.length ? symbols : ["VECTRYX", "MARKET", "SIGNALS"];
+    return [...base, ...base];
+  }, [symbols]);
 
-  // Build the scrolling string: repeat list twice for seamless loop
-  const row = items.slice(0, 25); // keep it light
-  const loop = [...row, ...row];
+  const duration = Math.max(8, Number(speedSeconds || 20));
 
   return (
     <div
@@ -88,52 +64,43 @@ export default function TickerTape() {
         left: 0,
         right: 0,
         bottom: 0,
-        height: 44,
+        height: 52,
         background: "rgba(2,6,23,0.92)",
         borderTop: "1px solid rgba(148,163,184,0.25)",
-        zIndex: 50,
         overflow: "hidden",
+        zIndex: 9999,
       }}
     >
       <div
         style={{
-          display: "flex",
+          display: "inline-flex",
           alignItems: "center",
-          height: "100%",
           whiteSpace: "nowrap",
-          willChange: "transform",
-          animation: "vectryxTickerScroll 20s linear infinite",
-          paddingLeft: 16,
+          height: "100%",
+          animation: `vectryx-ticker ${duration}s linear infinite`,
         }}
       >
-        {loop.map((q, idx) => (
-          <span
-            key={`${q.ticker}-${idx}`}
+        {tape.map((t, idx) => (
+          <div
+            key={`${t}-${idx}`}
             style={{
               display: "inline-flex",
-              alignItems: "baseline",
-              gap: 10,
-              paddingRight: 22,
-              color: "rgba(255,255,255,0.92)",
+              alignItems: "center",
+              padding: "0 16px",
               fontSize: 13,
-              fontWeight: 850,
+              fontWeight: 800,
+              color: "rgba(255,255,255,0.92)",
+              letterSpacing: 0.3,
             }}
           >
-            <span style={{ fontWeight: 950 }}>{q.ticker}</span>
-            <span style={{ opacity: 0.9 }}>{fmtPrice(q.price)}</span>
-            {q.change_pct !== null && q.change_pct !== undefined ? (
-              <span style={{ color: q.change_pct >= 0 ? "#22c55e" : "#ef4444" }}>
-                {q.change_pct >= 0 ? "+" : ""}
-                {Number(q.change_pct).toFixed(2)}%
-              </span>
-            ) : null}
-            <span style={{ opacity: 0.35 }}>•</span>
-          </span>
+            <span style={{ opacity: 0.75, marginRight: 10 }}>•</span>
+            {t}
+          </div>
         ))}
       </div>
 
       <style jsx global>{`
-        @keyframes vectryxTickerScroll {
+        @keyframes vectryx-ticker {
           0% {
             transform: translateX(0);
           }

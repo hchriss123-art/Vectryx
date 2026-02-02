@@ -1,7 +1,6 @@
 "use client";
 
 import Navbar from "@/components/Navbar";
-import TickerTape from "@/components/TickerTape";
 import { useEffect, useMemo, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 
@@ -196,7 +195,7 @@ export default function DashboardClient() {
     };
   }, [supabase]);
 
-  // Pick a small set for the dashboard tiles (show up to 8)
+  // Show up to 8 tiles on dashboard
   const dashboardTickers = useMemo(() => tickers.slice(0, 8), [tickers]);
 
   return (
@@ -313,9 +312,7 @@ export default function DashboardClient() {
                       Price: {q?.price === null || q?.price === undefined ? "—" : `$${Number(q.price).toFixed(2)}`}
                     </div>
 
-                    <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>
-                      Updated {ts ? timeAgoShort(ts) : "—"}
-                    </div>
+                    <div style={{ marginTop: 6, fontSize: 12, opacity: 0.7 }}>Updated {ts ? timeAgoShort(ts) : "—"}</div>
 
                     <div style={{ marginTop: 10, fontSize: 12, opacity: 0.8 }}>Open details →</div>
                   </a>
@@ -335,8 +332,6 @@ export default function DashboardClient() {
           ) : null}
         </section>
       </div>
-      <div style={{ height: 52 }} /> {/* spacer so content doesn't hide behind tape */}
-      <TickerTape />
     </main>
   );
 }
