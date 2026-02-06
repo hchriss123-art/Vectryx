@@ -1,6 +1,7 @@
 "use client";
 
 import Navbar from "@/components/Navbar";
+import HeroSignalCard, { type HeroSignal } from "@/components/HeroSignalCard";
 import { useEffect, useMemo, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 
@@ -68,6 +69,10 @@ function timeAgoShort(iso: string) {
 function quoteTimestamp(q?: WatchlistQuote | null): string | null {
   if (!q) return null;
   return (q.updated_at || q.created_at || null) as string | null;
+}
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
 }
 
 export default function DashboardClient() {
@@ -147,56 +152,116 @@ export default function DashboardClient() {
     boot();
   }, [supabase]);
 
-  // Poll quotes (for the dashboard summary tiles)
-  useEffect(() => {
-    const sb = supabase;
-    if (!sb) return;
+ // Poll quotes (for the dashboard summary tiles)
+useEffect(() => {
+  const sb = supabase;
+  if (!sb) return;
 
-    let timer: number | null = null;
+  let timer: number | null = null;
 
-    const loadQuotes = async () => {
-      setRefreshing(true);
+  const loadQuotes = async () => {
+    setRefreshing(true);
 
-      try {
-        const { data: sessionData, error: sessionErr } = await sb.auth.getSession();
-        if (sessionErr) return;
+    try {
+      const { data: sessionData, error: sessionErr } = await sb.auth.getSession();
+      if (sessionErr) return;
 
-        const user = sessionData.session?.user;
-        if (!user) return;
+      const user = sessionData.session?.user;
+      if (!user) return;
 
-        const { data, error } = await sb
-          .from("watchlist_quote")
-          .select("ticker, price, change_pct, created_at, updated_at")
-          .eq("user_id", user.id)
-          .order("updated_at", { ascending: false });
+      const { data, error } = await sb
+        .from("watchlist_quote")
+        .select("ticker, price, change_pct, created_at, updated_at")
+        .eq("user_id", user.id)
+        .order("updated_at", { ascending: false });
 
-        if (error) {
-          console.error("Quote load error:", error.message);
-          return;
-        }
-
-        const latest: Record<string, WatchlistQuote> = {};
-        for (const q of (data as WatchlistQuote[]) ?? []) {
-          const key = String(q.ticker || "").toUpperCase();
-          if (!latest[key]) latest[key] = { ...q, ticker: key };
-        }
-
-        setQuotes(latest);
-      } finally {
-        setRefreshing(false);
+      if (error) {
+        console.error("Quote load error:", error.message);
+        return;
       }
-    };
 
-    loadQuotes();
-    timer = window.setInterval(loadQuotes, 15_000);
+      const latest: Record<string, WatchlistQuote> = {};
+      for (const q of (data as WatchlistQuote[]) ?? []) {
+        const key = String(q.ticker || "").toUpperCase();
+        if (!latest[key]) latest[key] = { ...q, ticker: key };
+      }
 
-    return () => {
-      if (timer) window.clearInterval(timer);
-    };
-  }, [supabase]);
+      setQuotes(latest);
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
-  // Show up to 8 tiles on dashboard
+  loadQuotes();
+  timer = window.setInterval(loadQuotes, 15_000);
+
+  return () => {
+    if (timer) window.clearInterval(timer);
+  };
+}, [supabase]);
+  /**
+   * V2.3 Hero: derive a "highest-confidence" signal from the quotes you already have.
+   * Strategy:
+   * - Choose the ticker in the dashboard set with the largest absolute move (|change_pct|)
+   * - Translate magnitude into a 55–95 confidence band
+   */
   const dashboardTickers = useMemo(() => tickers.slice(0, 8), [tickers]);
+
+  const heroSignal: HeroSignal | null = useMemo(() => {
+    if (!dashboardTickers.length) return null;
+
+    let best: WatchlistQuote | null = null;
+    let bestScore = -1;
+
+    for (const t of dashboardTickers) {
+      const q = quotes[t];
+      if (!q) continue;
+      const cp = typeof q.change_pct === "number" ? q.change_pct : null;
+      if (cp === null) continue;
+
+      const score = Math.abs(cp);
+      if (score > bestScore) {
+        bestScore = score;
+        best = q;
+      }
+    }
+
+    if (!best) return null;
+
+    const cp = typeof best.change_pct === "number" ? best.change_pct : 0;
+    const direction = cp > 0.15 ? "bullish" : cp < -0.15 ? "bearish" : "neutral";
+
+    const magnitude = Math.abs(cp);
+    const confidence = clamp(Math.round(55 + magnitude * 20), 55, 95);
+
+    const updatedAt = quoteTimestamp(best);
+
+    const headline =
+      direction === "bullish" ? "Bullish Momentum" : direction === "bearish" ? "Bearish Pressure" : "Neutral Setup";
+
+    const thesis =
+      typeof best.price === "number"
+        ? `${best.ticker.toUpperCase()} moved ${cp >= 0 ? "+" : ""}${cp.toFixed(2)}% to $${best.price.toFixed(
+            2
+          )}. Monitoring for continuation.`
+        : `${best.ticker.toUpperCase()} moved ${cp >= 0 ? "+" : ""}${cp.toFixed(2)}%. Monitoring for continuation.`;
+
+    return {
+      ticker: best.ticker.toUpperCase(),
+      direction,
+      confidence,
+      headline,
+      thesis,
+      source: "Live Quotes",
+      updatedAt,
+      price: best.price ?? null,
+      changePct: best.change_pct ?? null,
+      catalysts: [
+        "Largest move in your dashboard set (by % change).",
+        "Live quote feed via Supabase watchlist_quote.",
+      ],
+    };
+  }, [dashboardTickers, quotes]);
 
   return (
     <main style={{ minHeight: "100vh", background: "#0b1220" }}>
@@ -216,10 +281,28 @@ export default function DashboardClient() {
 
       <div style={{ maxWidth: 1120, margin: "0 auto", padding: "18px" }}>
         {statusMsg && (
-          <div style={{ marginBottom: 12, padding: 12, borderRadius: 12, background: "rgba(239,68,68,0.12)", color: "white" }}>
+          <div
+            style={{
+              marginBottom: 12,
+              padding: 12,
+              borderRadius: 12,
+              background: "rgba(239,68,68,0.12)",
+              color: "white",
+            }}
+          >
             {statusMsg}
           </div>
         )}
+
+        {/* V2.3 Hero */}
+        <div style={{ marginBottom: 14 }}>
+          <HeroSignalCard
+            signal={heroSignal}
+            loading={loading}
+            showMeta={true}
+            emptyMessage="No high-confidence signals yet — add tickers in Preferences to begin tracking."
+          />
+        </div>
 
         <section
           style={{

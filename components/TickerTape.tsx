@@ -136,6 +136,8 @@ export default function TickerTape({ speedSeconds = 20 }: Props) {
           whiteSpace: "nowrap",
           height: "100%",
           animation: `vectryx-ticker ${duration}s linear infinite`,
+          willChange: "transform",
+
         }}
       >
         {tape.map((sym, idx) => {
@@ -143,13 +145,19 @@ export default function TickerTape({ speedSeconds = 20 }: Props) {
           const ts = quoteTs(q);
           const stale = isStale(ts, 10);
 
-          const price =
-            q?.price === null || q?.price === undefined ? null : Number(q.price);
+          const rawPrice = q?.price;
+          const rawPct = q?.change_pct;
 
-          const pct =
-            q?.change_pct === null || q?.change_pct === undefined
-              ? null
-              : Number(q.change_pct);
+          const price =
+            typeof rawPrice === "number" && Number.isFinite(rawPrice)
+              ? rawPrice
+              : null;
+
+         const pct =
+           typeof rawPct === "number" && Number.isFinite(rawPct)
+             ? rawPct
+             : null;
+
 
           return (
             <div
