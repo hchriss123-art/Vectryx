@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 
 type Props = {
   speedSeconds?: number; // lower = faster
+  pollMs?: number;       // how often to refresh quotes from Supabase
 };
 
 type QuoteRow = {
@@ -25,9 +26,11 @@ function parseTickers(raw: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const t of parts) {
-    if (seen.has(t)) continue;
-    seen.add(t);
-    out.push(t);
+    const tk = t.replace(/^\$/, ""); // strip leading $ if user pasted $AAPL
+    if (!tk) continue;
+    if (seen.has(tk)) continue;
+    seen.add(tk);
+    out.push(tk);
   }
   return out;
 }
@@ -37,7 +40,7 @@ function quoteTs(q?: QuoteRow | null): string | null {
   return (q.updated_at || q.created_at || null) as string | null;
 }
 
-function isStale(ts: string | null, minutes = 10): boolean {
+function isStale(ts: string | null, minutes = 6): boolean {
   if (!ts) return true;
   const d = new Date(ts);
   if (isNaN(d.getTime())) return true;
@@ -45,75 +48,89 @@ function isStale(ts: string | null, minutes = 10): boolean {
   return ageMs > minutes * 60 * 1000;
 }
 
-export default function TickerTape({ speedSeconds = 20 }: Props) {
+export default function TickerTape({ speedSeconds = 20, pollMs = 60_000 }: Props) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const [symbols, setSymbols] = useState<string[]>([]);
   const [quotes, setQuotes] = useState<Record<string, QuoteRow>>({});
+  const inFlight = useRef(false);
 
-  // Load tickers + quotes
   useEffect(() => {
+    const sb = supabase;
+    if (!sb) return;
+
     const load = async () => {
-      const sb = supabase;
-      if (!sb) return;
+      if (inFlight.current) return;
+      inFlight.current = true;
 
-      const { data: sessionData } = await sb.auth.getSession();
-      const user = sessionData.session?.user;
-      if (!user) return;
+      try {
+        const { data: sessionData, error: sErr } = await sb.auth.getSession();
+        if (sErr) {
+          console.error("ticker tape session error:", sErr.message);
+          return;
+        }
 
-      // 1) Tickers from user_preferences (single source of truth)
-      const { data: pref, error: prefErr } = await sb
-        .from("user_preferences")
-        .select("watchlist_text")
-        .eq("user_id", user.id)
-        .maybeSingle();
+        const user = sessionData.session?.user;
+        if (!user) return;
 
-      if (prefErr) {
-        console.error("ticker tape prefs error:", prefErr.message);
-        return;
+        // 1) Tickers from user_preferences (single source of truth)
+        const { data: pref, error: prefErr } = await sb
+          .from("user_preferences")
+          .select("watchlist_text")
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        if (prefErr) {
+          console.error("ticker tape prefs error:", prefErr.message);
+          return;
+        }
+
+        const tickers = parseTickers((pref as any)?.watchlist_text || "");
+        setSymbols(tickers);
+
+        if (!tickers.length) {
+          setQuotes({});
+          return;
+        }
+
+        // 2) Quotes from watchlist_quote, only for the tickers we display
+        const { data: rows, error: qErr } = await sb
+          .from("watchlist_quote")
+          .select("ticker, price, change_pct, created_at, updated_at")
+          .eq("user_id", user.id)
+          .in("ticker", tickers)
+          .order("updated_at", { ascending: false });
+
+        if (qErr) {
+          console.error("ticker tape quote error:", qErr.message);
+          return;
+        }
+
+        const latest: Record<string, QuoteRow> = {};
+        for (const r of (rows as QuoteRow[]) ?? []) {
+          const key = String(r.ticker || "").toUpperCase();
+          if (!key) continue;
+          if (!latest[key]) latest[key] = { ...r, ticker: key };
+        }
+        setQuotes(latest);
+      } finally {
+        inFlight.current = false;
       }
-
-      const tickers = parseTickers((pref as any)?.watchlist_text || "");
-      setSymbols(tickers);
-
-      if (!tickers.length) {
-        setQuotes({});
-        return;
-      }
-
-      // 2) Quotes from watchlist_quote
-      const { data: rows, error: qErr } = await sb
-        .from("watchlist_quote")
-        .select("ticker, price, change_pct, created_at, updated_at")
-        .eq("user_id", user.id)
-        .order("updated_at", { ascending: false });
-
-      if (qErr) {
-        console.error("ticker tape quote error:", qErr.message);
-        return;
-      }
-
-      // keep latest per ticker
-      const latest: Record<string, QuoteRow> = {};
-      for (const r of (rows as QuoteRow[]) ?? []) {
-        const key = String(r.ticker || "").toUpperCase();
-        if (!key) continue;
-        if (!latest[key]) latest[key] = { ...r, ticker: key };
-      }
-      setQuotes(latest);
     };
 
+    // Initial load + interval (match worker cadence; avoid 15s hammering)
     load();
-    const timer = window.setInterval(load, 15_000); // stay in sync with dashboard polling
+    const timer = window.setInterval(load, pollMs);
     return () => window.clearInterval(timer);
-  }, [supabase]);
+  }, [supabase, pollMs]);
 
-  // Build tape items (duplicate list so it loops seamlessly)
+  // Duplicate list so it loops seamlessly
   const tape = useMemo(() => {
     const base = symbols.length ? symbols : ["VECTRYX", "MARKET", "SIGNALS"];
     return [...base, ...base];
   }, [symbols]);
 
   const duration = Math.max(8, Number(speedSeconds || 20)); // safety
+  const staleMinutes = Math.max(5, Math.round((pollMs / 1000 / 60) * 3)); // ~3x poll interval
 
   return (
     <div
@@ -137,27 +154,21 @@ export default function TickerTape({ speedSeconds = 20 }: Props) {
           height: "100%",
           animation: `vectryx-ticker ${duration}s linear infinite`,
           willChange: "transform",
-
         }}
       >
         {tape.map((sym, idx) => {
           const q = quotes[sym];
           const ts = quoteTs(q);
-          const stale = isStale(ts, 10);
+          const stale = isStale(ts, staleMinutes);
 
           const rawPrice = q?.price;
           const rawPct = q?.change_pct;
 
           const price =
-            typeof rawPrice === "number" && Number.isFinite(rawPrice)
-              ? rawPrice
-              : null;
+            typeof rawPrice === "number" && Number.isFinite(rawPrice) ? rawPrice : null;
 
-         const pct =
-           typeof rawPct === "number" && Number.isFinite(rawPct)
-             ? rawPct
-             : null;
-
+          const pct =
+            typeof rawPct === "number" && Number.isFinite(rawPct) ? rawPct : null;
 
           return (
             <div

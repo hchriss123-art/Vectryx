@@ -2,7 +2,7 @@
 
 import Navbar from "@/components/Navbar";
 import HeroSignalCard, { type HeroSignal } from "@/components/HeroSignalCard";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 
 type Plan = "FREE" | "PRO" | "MORPHEUS";
@@ -35,7 +35,7 @@ const BASE_LIMIT_BY_PLAN: Record<Plan, number> = {
 };
 
 function parseTickers(raw: string): string[] {
-  const parts = raw
+  const parts = (raw || "")
     .split(/[\s,]+/g)
     .map((s) => s.trim().toUpperCase())
     .filter(Boolean);
@@ -43,9 +43,11 @@ function parseTickers(raw: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const t of parts) {
-    if (seen.has(t)) continue;
-    seen.add(t);
-    out.push(t);
+    const tk = t.replace(/^\$/, ""); // strip leading $ if user pasted $AAPL
+    if (!tk) continue;
+    if (seen.has(tk)) continue;
+    seen.add(tk);
+    out.push(tk);
   }
   return out;
 }
@@ -87,12 +89,25 @@ export default function DashboardClient() {
   const [quotes, setQuotes] = useState<Record<string, WatchlistQuote>>({});
   const [refreshing, setRefreshing] = useState(false);
 
+  const inFlight = useRef(false);
+
   const plan: Plan = (profile?.plan as Plan) ?? "FREE";
   const extraBlocks = Number(profile?.extra_ticker_blocks ?? 0);
   const tickerLimit = (BASE_LIMIT_BY_PLAN[plan] ?? 5) + Math.max(0, extraBlocks) * 10;
   const planLabel = plan === "MORPHEUS" ? "VECTRYX" : plan;
 
   const tickers = useMemo(() => parseTickers(prefs?.watchlist_text ?? ""), [prefs?.watchlist_text]);
+  const dashboardTickers = useMemo(() => tickers.slice(0, 8), [tickers]);
+
+  const latestDashboardUpdate = useMemo(() => {
+    let best: string | null = null;
+    for (const t of dashboardTickers) {
+      const ts = quoteTimestamp(quotes[t]);
+      if (!ts) continue;
+      if (!best || new Date(ts).getTime() > new Date(best).getTime()) best = ts;
+    }
+    return best;
+  }, [dashboardTickers, quotes]);
 
   // Boot: session + profile + preferences
   useEffect(() => {
@@ -152,61 +167,74 @@ export default function DashboardClient() {
     boot();
   }, [supabase]);
 
- // Poll quotes (for the dashboard summary tiles)
-useEffect(() => {
-  const sb = supabase;
-  if (!sb) return;
+  // Poll quotes (for the dashboard summary tiles)
+  useEffect(() => {
+    const sb = supabase;
+    if (!sb) return;
 
-  let timer: number | null = null;
+    const POLL_MS = 60_000; // matches “feels live” + budget worker cadence
 
-  const loadQuotes = async () => {
-    setRefreshing(true);
+    let timer: number | null = null;
 
-    try {
-      const { data: sessionData, error: sessionErr } = await sb.auth.getSession();
-      if (sessionErr) return;
+    const loadQuotes = async () => {
+      if (inFlight.current) return;
+      inFlight.current = true;
+      setRefreshing(true);
 
-      const user = sessionData.session?.user;
-      if (!user) return;
+      try {
+        const { data: sessionData, error: sessionErr } = await sb.auth.getSession();
+        if (sessionErr) return;
 
-      const { data, error } = await sb
-        .from("watchlist_quote")
-        .select("ticker, price, change_pct, created_at, updated_at")
-        .eq("user_id", user.id)
-        .order("updated_at", { ascending: false });
+        const user = sessionData.session?.user;
+        if (!user) return;
 
-      if (error) {
-        console.error("Quote load error:", error.message);
-        return;
+        // Only request the tickers the user actually tracks (cap to keep query size sane)
+        const wanted = tickers.slice(0, 50);
+        if (!wanted.length) {
+          setQuotes({});
+          return;
+        }
+
+        const { data, error } = await sb
+          .from("watchlist_quote")
+          .select("ticker, price, change_pct, created_at, updated_at")
+          .eq("user_id", user.id)
+          .in("ticker", wanted)
+          .order("updated_at", { ascending: false });
+
+        if (error) {
+          console.error("Quote load error:", error.message);
+          return;
+        }
+
+        const latest: Record<string, WatchlistQuote> = {};
+        for (const q of (data as WatchlistQuote[]) ?? []) {
+          const key = String(q.ticker || "").toUpperCase();
+          if (!key) continue;
+          if (!latest[key]) latest[key] = { ...q, ticker: key };
+        }
+
+        setQuotes(latest);
+      } finally {
+        setRefreshing(false);
+        inFlight.current = false;
       }
+    };
 
-      const latest: Record<string, WatchlistQuote> = {};
-      for (const q of (data as WatchlistQuote[]) ?? []) {
-        const key = String(q.ticker || "").toUpperCase();
-        if (!latest[key]) latest[key] = { ...q, ticker: key };
-      }
+    loadQuotes();
+    timer = window.setInterval(loadQuotes, POLL_MS);
 
-      setQuotes(latest);
-    } finally {
-      setRefreshing(false);
-    }
-  };
+    return () => {
+      if (timer) window.clearInterval(timer);
+    };
+  }, [supabase, tickers]);
 
-  loadQuotes();
-  timer = window.setInterval(loadQuotes, 15_000);
-
-  return () => {
-    if (timer) window.clearInterval(timer);
-  };
-}, [supabase]);
   /**
    * V2.3 Hero: derive a "highest-confidence" signal from the quotes you already have.
    * Strategy:
    * - Choose the ticker in the dashboard set with the largest absolute move (|change_pct|)
    * - Translate magnitude into a 55–95 confidence band
    */
-  const dashboardTickers = useMemo(() => tickers.slice(0, 8), [tickers]);
-
   const heroSignal: HeroSignal | null = useMemo(() => {
     if (!dashboardTickers.length) return null;
 
@@ -274,7 +302,8 @@ useEffect(() => {
             Dashboard
           </h1>
           <div style={{ opacity: 0.86, fontSize: 14, lineHeight: 1.6, maxWidth: 820 }}>
-            Live quotes are flowing from your Supabase <strong>watchlist_quote</strong> table.
+            Live quotes are flowing from your Supabase <strong>watchlist_quote</strong> table
+            {latestDashboardUpdate ? ` • Last updated ${timeAgoShort(latestDashboardUpdate)}` : ""}.
           </div>
         </div>
       </div>
