@@ -43,3 +43,14 @@ next-env.d.ts
 # Documents / local notes
 *.docx
 ~$*.docx
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Next.js / Node
+.next/
+node_modules/
+out/
