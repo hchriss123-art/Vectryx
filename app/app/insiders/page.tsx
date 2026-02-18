@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
+
 import Link from "next/link";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 
@@ -25,6 +26,11 @@ export default function InsidersPage() {
 
   async function load() {
     setLoading(true);
+
+    if (!supabase) {
+      setLoading(false);
+      return;
+    }
 
     const { data, error } = await supabase
       .from("insider_event")
@@ -189,7 +195,7 @@ export default function InsidersPage() {
   );
 }
 
-const thStyle: React.CSSProperties = {
+const thStyle: CSSProperties = {
   padding: "12px 12px",
   fontSize: 12,
   opacity: 0.75,
@@ -197,7 +203,7 @@ const thStyle: React.CSSProperties = {
   textTransform: "uppercase",
 };
 
-const tdStyle: React.CSSProperties = {
+const tdStyle: CSSProperties = {
   padding: "12px 12px",
   verticalAlign: "top",
 };
