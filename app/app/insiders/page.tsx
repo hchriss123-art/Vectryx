@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
-
 import Link from "next/link";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 
@@ -22,15 +21,22 @@ export default function InsidersPage() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
 
   const [rows, setRows] = useState<InsiderEvent[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
+  // ✅ search box
+  const [query, setQuery] = useState("");
 
+  async function load(isBackground = false) {
     if (!supabase) {
-      setLoading(false);
+      setInitialLoading(false);
+      setRefreshing(false);
       return;
     }
+
+    if (isBackground) setRefreshing(true);
+    else setInitialLoading(true);
 
     const { data, error } = await supabase
       .from("insider_event")
@@ -40,14 +46,16 @@ export default function InsidersPage() {
 
     if (!error && data) {
       setRows(data as InsiderEvent[]);
+      setLastUpdatedAt(new Date().toISOString());
     }
 
-    setLoading(false);
+    if (isBackground) setRefreshing(false);
+    else setInitialLoading(false);
   }
 
   useEffect(() => {
-    load();
-    const t = setInterval(load, 30_000); // refresh every 30s
+    load(false);
+    const t = setInterval(() => load(true), 30_000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -61,6 +69,22 @@ export default function InsidersPage() {
     if (x === null || x === undefined) return "—";
     return Math.round(x).toLocaleString();
   }
+
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? rows.filter((r) => {
+        const t = String(r.ticker || "").toLowerCase();
+        const insider = String(r.insider_name || "").toLowerCase();
+        const issuer = String(r.issuer_name || "").toLowerCase();
+        return t.includes(q) || insider.includes(q) || issuer.includes(q);
+      })
+    : rows;
+
+  const statusLine = initialLoading
+    ? "Loading…"
+    : `Showing ${filtered.length.toLocaleString()} of ${rows.length.toLocaleString()} events${
+        refreshing ? " • Refreshing…" : ""
+      }${lastUpdatedAt ? ` • Updated ${new Date(lastUpdatedAt).toLocaleTimeString()}` : ""}`;
 
   return (
     <div
@@ -83,33 +107,43 @@ export default function InsidersPage() {
         }}
       >
         {/* Header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <h1 style={{ fontSize: 38, fontWeight: 900, margin: 0, letterSpacing: -0.6 }}>Insider Activity</h1>
 
-          <Link
-            href="/app/dashboard"
-            style={{
-              padding: "12px 14px",
-              borderRadius: 14,
-              border: "1px solid rgba(255,255,255,0.14)",
-              background: "rgba(255,255,255,0.04)",
-              color: "rgba(255,255,255,0.92)",
-              fontWeight: 900,
-              textDecoration: "none",
-            }}
-          >
-            Back to Dashboard
-          </Link>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search ticker / insider / company…"
+              style={searchInput}
+            />
+
+            <Link
+              href="/app/dashboard"
+              style={{
+                padding: "12px 14px",
+                borderRadius: 14,
+                border: "1px solid rgba(255,255,255,0.14)",
+                background: "rgba(255,255,255,0.04)",
+                color: "rgba(255,255,255,0.92)",
+                fontWeight: 900,
+                textDecoration: "none",
+                whiteSpace: "nowrap",
+              }}
+            >
+              Back to Dashboard
+            </Link>
+          </div>
         </div>
 
         {/* Status */}
-        <div style={{ marginTop: 12, opacity: 0.75, fontSize: 13 }}>
-          {loading ? "Loading…" : `Showing ${rows.length.toLocaleString()} events`}
-        </div>
+        <div style={{ marginTop: 12, opacity: 0.75, fontSize: 13 }}>{statusLine}</div>
 
-        {loading && <div style={{ marginTop: 18 }}>Loading…</div>}
+        {/* Initial loading only */}
+        {initialLoading && rows.length === 0 ? <div style={{ marginTop: 18 }}>Loading…</div> : null}
 
-        {!loading && (
+        {/* Table */}
+        {!initialLoading || rows.length > 0 ? (
           <div
             style={{
               marginTop: 16,
@@ -148,7 +182,7 @@ export default function InsidersPage() {
                 </thead>
 
                 <tbody>
-                  {rows.map((r) => (
+                  {filtered.map((r) => (
                     <tr key={r.id} style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}>
                       <td style={tdStyle}>
                         <div style={{ fontWeight: 900 }}>{(r.ticker || "").toUpperCase()}</div>
@@ -178,10 +212,10 @@ export default function InsidersPage() {
                     </tr>
                   ))}
 
-                  {rows.length === 0 ? (
+                  {filtered.length === 0 ? (
                     <tr>
                       <td style={{ ...tdStyle, padding: 18 }} colSpan={7}>
-                        No insider events yet. Run Morpheus and refresh.
+                        No matches for <strong>{query || "your search"}</strong>.
                       </td>
                     </tr>
                   ) : null}
@@ -189,7 +223,7 @@ export default function InsidersPage() {
               </table>
             </div>
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );
@@ -206,4 +240,16 @@ const thStyle: CSSProperties = {
 const tdStyle: CSSProperties = {
   padding: "12px 12px",
   verticalAlign: "top",
+};
+
+const searchInput: CSSProperties = {
+  width: 320,
+  maxWidth: "70vw",
+  padding: "12px 12px",
+  borderRadius: 14,
+  border: "1px solid rgba(255,255,255,0.14)",
+  background: "rgba(255,255,255,0.04)",
+  color: "rgba(255,255,255,0.92)",
+  outline: "none",
+  fontWeight: 800,
 };

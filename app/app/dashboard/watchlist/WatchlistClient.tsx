@@ -21,15 +21,9 @@ type UserProfile = {
   extra_ticker_blocks?: number;
 };
 
-type WatchlistRow = {
-  id: number;
+type UserPrefsRow = {
   user_id: string;
-};
-
-type WatchlistItemRow = {
-  watchlist_id: number;
-  ticker: string;
-  created_at?: string | null;
+  watchlist_text: string | null;
 };
 
 const BASE_LIMIT_BY_PLAN: Record<Plan, number> = {
@@ -37,6 +31,23 @@ const BASE_LIMIT_BY_PLAN: Record<Plan, number> = {
   PRO: 15,
   MORPHEUS: 50,
 };
+
+function parseTickers(raw: string) {
+  const parts = raw
+    .split(",")
+    .map((t) => t.trim().toUpperCase())
+    .filter(Boolean);
+
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of parts) {
+    if (!seen.has(t)) {
+      seen.add(t);
+      out.push(t);
+    }
+  }
+  return out;
+}
 
 function timeAgoShort(iso?: string | null) {
   if (!iso) return "—";
@@ -66,8 +77,7 @@ export default function WatchlistClient() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
-  // ✅ single source of truth tickers
-  const [watchlistId, setWatchlistId] = useState<number | null>(null);
+  // ✅ single source of truth tickers = user_preferences.watchlist_text
   const [tickers, setTickers] = useState<string[]>([]);
 
   // quotes
@@ -77,18 +87,18 @@ export default function WatchlistClient() {
 
   const plan: Plan = (profile?.plan as Plan) ?? "FREE";
   const extraBlocks = Number(profile?.extra_ticker_blocks ?? 0);
-  const tickerLimit =
-    (BASE_LIMIT_BY_PLAN[plan] ?? 5) + Math.max(0, extraBlocks) * 10;
+  const tickerLimit = (BASE_LIMIT_BY_PLAN[plan] ?? 5) + Math.max(0, extraBlocks) * 10;
 
   const planLabel = plan === "MORPHEUS" ? "VECTRYX" : plan;
 
-  // ✅ Load profile + watchlist_id + watchlist_item tickers
+  // ✅ Load profile + preferences tickers
   useEffect(() => {
-    const boot = async () => {
+    const sb = supabase;
+
+    const loadWatchlist = async () => {
       setLoading(true);
       setStatusMsg(null);
 
-      const sb = supabase;
       if (!sb) {
         setStatusMsg("Supabase is not configured. Check environment variables.");
         setLoading(false);
@@ -122,62 +132,41 @@ export default function WatchlistClient() {
       }
       setProfile((prof as UserProfile | null) ?? null);
 
-      // watchlist row (one per user)
-      const { data: wl, error: wlErr } = await sb
-        .from("watchlist")
-        .select("id, user_id")
+      // ✅ preferences → watchlist_text (this is what Preferences edits)
+      const { data: prefs, error: prefsErr } = await sb
+        .from("user_preferences")
+        .select("user_id, watchlist_text")
         .eq("user_id", user.id)
         .maybeSingle();
 
-      if (wlErr) {
-        setStatusMsg(wlErr.message);
-        setLoading(false);
-        return;
-      }
-
-      const wlId = (wl as WatchlistRow | null)?.id ?? null;
-      setWatchlistId(wlId);
-
-      if (!wlId) {
+      if (prefsErr) {
+        setStatusMsg(prefsErr.message);
         setTickers([]);
         setLoading(false);
         return;
       }
 
-      // watchlist_item tickers
-      const { data: items, error: itemsErr } = await sb
-        .from("watchlist_item")
-        .select("watchlist_id, ticker, created_at")
-        .eq("watchlist_id", wlId)
-        .order("ticker", { ascending: true });
+      const raw = ((prefs as UserPrefsRow | null)?.watchlist_text ?? "") as string;
+      const list = parseTickers(raw);
 
-      if (itemsErr) {
-        setStatusMsg(itemsErr.message);
-        setLoading(false);
-        return;
-      }
-
-      const list = ((items as WatchlistItemRow[]) ?? [])
-        .map((r) => String(r.ticker || "").toUpperCase())
-        .filter(Boolean);
-
-      // de-dupe safety
-      const seen = new Set<string>();
-      const deduped: string[] = [];
-      for (const t of list) {
-        if (seen.has(t)) continue;
-        seen.add(t);
-        deduped.push(t);
-      }
-
-      setTickers(deduped);
+      setTickers(list);
       setLoading(false);
     };
 
-    boot();
+    loadWatchlist();
+
+    // ✅ listen for Preferences save event and reload immediately
+    const onPrefsUpdated = () => {
+      loadWatchlist();
+    };
+    window.addEventListener("vx_prefs_updated", onPrefsUpdated);
+
+    return () => {
+      window.removeEventListener("vx_prefs_updated", onPrefsUpdated);
+    };
   }, [supabase]);
 
-  // ✅ Poll quotes (by user_id) — FIXED to use updated_at and order by it
+  // ✅ Poll quotes (by user_id)
   useEffect(() => {
     const sb = supabase;
     if (!sb) return;
@@ -272,7 +261,6 @@ export default function WatchlistClient() {
               <div style={{ marginTop: 4, fontSize: 12, opacity: 0.75 }}>
                 {tickers.length} / {tickerLimit} used
                 {refreshing ? " • Refreshing…" : ""}
-                {watchlistId ? ` • Watchlist ID ${watchlistId}` : ""}
               </div>
             </div>
 
@@ -318,7 +306,23 @@ export default function WatchlistClient() {
             <div style={{ marginTop: 14 }}>
               <div style={{ fontSize: 16, fontWeight: 900 }}>No tickers yet</div>
               <div style={{ marginTop: 6, fontSize: 13, opacity: 0.8 }}>
-                Your watchlist is driven by <strong>watchlist_item</strong>. Add rows there (or wire Preferences to write to it).
+                Go to <strong>Preferences</strong> and add tickers in your watchlist, then Save.
+              </div>
+              <div style={{ marginTop: 10 }}>
+                <a
+                  href="/preferences"
+                  style={{
+                    display: "inline-block",
+                    padding: "10px 12px",
+                    borderRadius: 12,
+                    border: "1px solid rgba(148,163,184,0.35)",
+                    color: "rgba(255,255,255,0.92)",
+                    textDecoration: "none",
+                    fontWeight: 900,
+                  }}
+                >
+                  Open Preferences →
+                </a>
               </div>
             </div>
           ) : (

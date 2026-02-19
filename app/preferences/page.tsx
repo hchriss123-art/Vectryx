@@ -2,7 +2,7 @@
 
 import Navbar from "@/components/Navbar";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabaseBrowser";
 import { useRouter } from "next/navigation";
 
@@ -119,9 +119,12 @@ export default function PreferencesPage() {
     setStatus("Preferences saved ✅");
     setSaving(false);
 
-// immediately show live prices
-router.push("/app/dashboard/watchlist");
+    // ✅ tell other pages (watchlist/dashboard) to reload prefs
+    window.dispatchEvent(new Event("vx_prefs_updated"));
+    router.refresh();
 
+    // immediately show live prices
+    router.push("/app/dashboard/watchlist");
   };
 
   return (
@@ -317,7 +320,7 @@ function parseTickers(raw: string) {
   return out;
 }
 
-const inputText: React.CSSProperties = {
+const inputText: CSSProperties = {
   width: "100%",
   padding: "12px 12px",
   borderRadius: 14,
@@ -328,7 +331,7 @@ const inputText: React.CSSProperties = {
   fontWeight: 800,
 };
 
-const inputArea: React.CSSProperties = {
+const inputArea: CSSProperties = {
   width: "100%",
   padding: 12,
   borderRadius: 14,
@@ -340,7 +343,7 @@ const inputArea: React.CSSProperties = {
   resize: "vertical",
 };
 
-const primaryBtn: React.CSSProperties = {
+const primaryBtn: CSSProperties = {
   padding: "12px 16px",
   borderRadius: 14,
   border: "1px solid rgba(255,255,255,0.25)",
@@ -350,7 +353,7 @@ const primaryBtn: React.CSSProperties = {
   cursor: "pointer",
 };
 
-const ghostLink: React.CSSProperties = {
+const ghostLink: CSSProperties = {
   display: "inline-block",
   padding: "12px 16px",
   borderRadius: 14,
