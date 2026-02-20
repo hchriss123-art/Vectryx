@@ -9,6 +9,10 @@ type InsiderEvent = {
   ticker: string;
   insider_name: string | null;
   issuer_name: string | null;
+
+  // ✅ add transaction code/type if present in table
+  transaction_code?: string | null;
+
   shares: number | null;
   price: number | null;
   value: number | null;
@@ -16,6 +20,61 @@ type InsiderEvent = {
   detail_url: string | null;
   created_at: string | null;
 };
+
+function txLabel(code?: string | null) {
+  const c = (code || "").toUpperCase().trim();
+  if (!c) return "—";
+  switch (c) {
+    case "P":
+      return "Purchase";
+    case "S":
+      return "Sell";
+    case "M":
+      return "Option Exercise";
+    case "A":
+      return "Grant/Award";
+    case "F":
+      return "Tax/Withholding";
+    case "D":
+      return "Disposition";
+    case "J":
+      return "Other";
+    default:
+      return c; // fallback: show raw code
+  }
+}
+
+function txBadge(code?: string | null) {
+  const c = (code || "").toUpperCase().trim();
+  const label = txLabel(c);
+
+  // simple styling without being too fancy
+  const isBuy = c === "P";
+  const isSell = c === "S";
+
+  const bg = isBuy ? "rgba(34,197,94,0.14)" : isSell ? "rgba(239,68,68,0.14)" : "rgba(148,163,184,0.14)";
+  const bd = isBuy ? "rgba(34,197,94,0.35)" : isSell ? "rgba(239,68,68,0.35)" : "rgba(148,163,184,0.30)";
+  const fg = isBuy ? "rgba(187,247,208,0.95)" : isSell ? "rgba(254,202,202,0.95)" : "rgba(255,255,255,0.85)";
+
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        padding: "6px 10px",
+        borderRadius: 999,
+        border: `1px solid ${bd}`,
+        background: bg,
+        color: fg,
+        fontSize: 12,
+        fontWeight: 950,
+        whiteSpace: "nowrap",
+      }}
+      title={c ? `Code: ${c}` : "No transaction code"}
+    >
+      {label}
+    </span>
+  );
+}
 
 export default function InsidersPage() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
@@ -25,7 +84,7 @@ export default function InsidersPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
 
-  // ✅ search box
+  // ✅ search
   const [query, setQuery] = useState("");
 
   async function load(isBackground = false) {
@@ -76,7 +135,8 @@ export default function InsidersPage() {
         const t = String(r.ticker || "").toLowerCase();
         const insider = String(r.insider_name || "").toLowerCase();
         const issuer = String(r.issuer_name || "").toLowerCase();
-        return t.includes(q) || insider.includes(q) || issuer.includes(q);
+        const tx = String(r.transaction_code || "").toLowerCase();
+        return t.includes(q) || insider.includes(q) || issuer.includes(q) || tx.includes(q);
       })
     : rows;
 
@@ -114,7 +174,7 @@ export default function InsidersPage() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search ticker / insider / company…"
+              placeholder="Search ticker / insider / company / code…"
               style={searchInput}
             />
 
@@ -139,10 +199,8 @@ export default function InsidersPage() {
         {/* Status */}
         <div style={{ marginTop: 12, opacity: 0.75, fontSize: 13 }}>{statusLine}</div>
 
-        {/* Initial loading only */}
         {initialLoading && rows.length === 0 ? <div style={{ marginTop: 18 }}>Loading…</div> : null}
 
-        {/* Table */}
         {!initialLoading || rows.length > 0 ? (
           <div
             style={{
@@ -154,11 +212,14 @@ export default function InsidersPage() {
             }}
           >
             <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
                 <thead>
                   <tr style={{ background: "rgba(255,255,255,0.04)" }}>
                     <th align="left" style={thStyle}>
                       Ticker
+                    </th>
+                    <th align="left" style={thStyle}>
+                      Type
                     </th>
                     <th align="left" style={thStyle}>
                       Insider
@@ -189,6 +250,8 @@ export default function InsidersPage() {
                         {r.issuer_name ? <div style={{ opacity: 0.7, fontSize: 12 }}>{r.issuer_name}</div> : null}
                       </td>
 
+                      <td style={tdStyle}>{txBadge(r.transaction_code)}</td>
+
                       <td style={tdStyle}>{r.insider_name || "—"}</td>
                       <td style={tdStyle}>{r.transaction_date || "—"}</td>
                       <td style={{ ...tdStyle, textAlign: "right" }}>{num(r.shares)}</td>
@@ -214,7 +277,7 @@ export default function InsidersPage() {
 
                   {filtered.length === 0 ? (
                     <tr>
-                      <td style={{ ...tdStyle, padding: 18 }} colSpan={7}>
+                      <td style={{ ...tdStyle, padding: 18 }} colSpan={8}>
                         No matches for <strong>{query || "your search"}</strong>.
                       </td>
                     </tr>
