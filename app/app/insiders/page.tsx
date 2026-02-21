@@ -9,10 +9,7 @@ type InsiderEvent = {
   ticker: string;
   insider_name: string | null;
   issuer_name: string | null;
-
-  // ✅ add transaction code/type if present in table
   transaction_code?: string | null;
-
   shares: number | null;
   price: number | null;
   value: number | null;
@@ -40,7 +37,7 @@ function txLabel(code?: string | null) {
     case "J":
       return "Other";
     default:
-      return c; // fallback: show raw code
+      return c;
   }
 }
 
@@ -48,7 +45,6 @@ function txBadge(code?: string | null) {
   const c = (code || "").toUpperCase().trim();
   const label = txLabel(c);
 
-  // simple styling without being too fancy
   const isBuy = c === "P";
   const isSell = c === "S";
 
@@ -84,11 +80,14 @@ export default function InsidersPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
 
-  // ✅ search
   const [query, setQuery] = useState("");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [authedUserId, setAuthedUserId] = useState<string | null>(null);
 
   async function load(isBackground = false) {
-    if (!supabase) {
+    const sb = supabase;
+    if (!sb) {
+      setErrorMsg("Supabase client is not configured (missing env vars).");
       setInitialLoading(false);
       setRefreshing(false);
       return;
@@ -97,13 +96,35 @@ export default function InsidersPage() {
     if (isBackground) setRefreshing(true);
     else setInitialLoading(true);
 
-    const { data, error } = await supabase
+    setErrorMsg(null);
+
+    // ✅ HARD CHECK: must be logged in for RLS (auth.uid()) to match rows
+    const { data: sessionData, error: sessionErr } = await sb.auth.getSession();
+    if (sessionErr) {
+      setErrorMsg(sessionErr.message);
+      if (isBackground) setRefreshing(false);
+      else setInitialLoading(false);
+      return;
+    }
+
+    const user = sessionData.session?.user;
+    if (!user) {
+      // Not logged in on Vercel → RLS will hide rows → looks empty
+      window.location.href = "/login";
+      return;
+    }
+
+    setAuthedUserId(user.id);
+
+    const { data, error } = await sb
       .from("insider_event")
       .select("*")
       .order("created_at", { ascending: false })
       .limit(200);
 
-    if (!error && data) {
+    if (error) {
+      setErrorMsg(error.message);
+    } else if (data) {
       setRows(data as InsiderEvent[]);
       setLastUpdatedAt(new Date().toISOString());
     }
@@ -199,6 +220,28 @@ export default function InsidersPage() {
         {/* Status */}
         <div style={{ marginTop: 12, opacity: 0.75, fontSize: 13 }}>{statusLine}</div>
 
+        {/* Debug (safe): confirms prod is logged in */}
+        <div style={{ marginTop: 6, opacity: 0.55, fontSize: 12 }}>
+          {authedUserId ? `Authenticated as: ${authedUserId}` : "Not authenticated (redirecting to login if needed)…"}
+        </div>
+
+        {errorMsg ? (
+          <div
+            style={{
+              marginTop: 12,
+              padding: 12,
+              borderRadius: 12,
+              background: "rgba(239,68,68,0.12)",
+              border: "1px solid rgba(239,68,68,0.25)",
+              color: "rgba(255,255,255,0.92)",
+              fontWeight: 800,
+              fontSize: 13,
+            }}
+          >
+            Supabase error: {errorMsg}
+          </div>
+        ) : null}
+
         {initialLoading && rows.length === 0 ? <div style={{ marginTop: 18 }}>Loading…</div> : null}
 
         {!initialLoading || rows.length > 0 ? (
@@ -251,7 +294,6 @@ export default function InsidersPage() {
                       </td>
 
                       <td style={tdStyle}>{txBadge(r.transaction_code)}</td>
-
                       <td style={tdStyle}>{r.insider_name || "—"}</td>
                       <td style={tdStyle}>{r.transaction_date || "—"}</td>
                       <td style={{ ...tdStyle, textAlign: "right" }}>{num(r.shares)}</td>
