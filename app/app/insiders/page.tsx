@@ -18,6 +18,8 @@ type InsiderEvent = {
   created_at: string | null;
 };
 
+type FilterKey = "ALL" | "BUY" | "SELL" | "USD_100K" | "USD_500K" | "USD_1M";
+
 function txLabel(code?: string | null) {
   const c = (code || "").toUpperCase().trim();
   if (!c) return "—";
@@ -72,6 +74,37 @@ function txBadge(code?: string | null) {
   );
 }
 
+function money(x: number | null) {
+  if (x === null || x === undefined) return "—";
+  return "$" + Math.round(x).toLocaleString();
+}
+
+function num(x: number | null) {
+  if (x === null || x === undefined) return "—";
+  return Math.round(x).toLocaleString();
+}
+
+function meetsFilter(r: InsiderEvent, f: FilterKey) {
+  const code = String(r.transaction_code || "").toUpperCase().trim();
+  const v = Number(r.value ?? 0);
+
+  switch (f) {
+    case "BUY":
+      return code === "P";
+    case "SELL":
+      return code === "S";
+    case "USD_100K":
+      return v >= 100_000;
+    case "USD_500K":
+      return v >= 500_000;
+    case "USD_1M":
+      return v >= 1_000_000;
+    case "ALL":
+    default:
+      return true;
+  }
+}
+
 export default function InsidersPage() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
 
@@ -80,14 +113,13 @@ export default function InsidersPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
 
+  // search + filters
   const [query, setQuery] = useState("");
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [authedUserId, setAuthedUserId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<FilterKey>("ALL");
 
   async function load(isBackground = false) {
     const sb = supabase;
     if (!sb) {
-      setErrorMsg("Supabase client is not configured (missing env vars).");
       setInitialLoading(false);
       setRefreshing(false);
       return;
@@ -96,25 +128,13 @@ export default function InsidersPage() {
     if (isBackground) setRefreshing(true);
     else setInitialLoading(true);
 
-    setErrorMsg(null);
-
-    // ✅ HARD CHECK: must be logged in for RLS (auth.uid()) to match rows
-    const { data: sessionData, error: sessionErr } = await sb.auth.getSession();
-    if (sessionErr) {
-      setErrorMsg(sessionErr.message);
-      if (isBackground) setRefreshing(false);
-      else setInitialLoading(false);
-      return;
-    }
-
+    // Must be logged in for RLS to allow rows
+    const { data: sessionData } = await sb.auth.getSession();
     const user = sessionData.session?.user;
     if (!user) {
-      // Not logged in on Vercel → RLS will hide rows → looks empty
       window.location.href = "/login";
       return;
     }
-
-    setAuthedUserId(user.id);
 
     const { data, error } = await sb
       .from("insider_event")
@@ -122,9 +142,7 @@ export default function InsidersPage() {
       .order("created_at", { ascending: false })
       .limit(200);
 
-    if (error) {
-      setErrorMsg(error.message);
-    } else if (data) {
+    if (!error && data) {
       setRows(data as InsiderEvent[]);
       setLastUpdatedAt(new Date().toISOString());
     }
@@ -140,26 +158,18 @@ export default function InsidersPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function money(x: number | null) {
-    if (x === null || x === undefined) return "—";
-    return "$" + Math.round(x).toLocaleString();
-  }
-
-  function num(x: number | null) {
-    if (x === null || x === undefined) return "—";
-    return Math.round(x).toLocaleString();
-  }
-
   const q = query.trim().toLowerCase();
-  const filtered = q
-    ? rows.filter((r) => {
-        const t = String(r.ticker || "").toLowerCase();
-        const insider = String(r.insider_name || "").toLowerCase();
-        const issuer = String(r.issuer_name || "").toLowerCase();
-        const tx = String(r.transaction_code || "").toLowerCase();
-        return t.includes(q) || insider.includes(q) || issuer.includes(q) || tx.includes(q);
-      })
-    : rows;
+
+  const filtered = rows
+    .filter((r) => meetsFilter(r, filter))
+    .filter((r) => {
+      if (!q) return true;
+      const t = String(r.ticker || "").toLowerCase();
+      const insider = String(r.insider_name || "").toLowerCase();
+      const issuer = String(r.issuer_name || "").toLowerCase();
+      const tx = String(r.transaction_code || "").toLowerCase();
+      return t.includes(q) || insider.includes(q) || issuer.includes(q) || tx.includes(q);
+    });
 
   const statusLine = initialLoading
     ? "Loading…"
@@ -217,37 +227,25 @@ export default function InsidersPage() {
           </div>
         </div>
 
-        {/* Status */}
-        <div style={{ marginTop: 12, opacity: 0.75, fontSize: 13 }}>{statusLine}</div>
+        {/* Filters */}
+        <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+          <FilterPill active={filter === "ALL"} onClick={() => setFilter("ALL")} label="All" />
+          <FilterPill active={filter === "BUY"} onClick={() => setFilter("BUY")} label="Purchases" />
+          <FilterPill active={filter === "SELL"} onClick={() => setFilter("SELL")} label="Sales" />
+          <FilterPill active={filter === "USD_100K"} onClick={() => setFilter("USD_100K")} label="$100k+" />
+          <FilterPill active={filter === "USD_500K"} onClick={() => setFilter("USD_500K")} label="$500k+" />
+          <FilterPill active={filter === "USD_1M"} onClick={() => setFilter("USD_1M")} label="$1M+" />
 
-        {/* Debug (safe): confirms prod is logged in */}
-        <div style={{ marginTop: 6, opacity: 0.55, fontSize: 12 }}>
-          {authedUserId ? `Authenticated as: ${authedUserId}` : "Not authenticated (redirecting to login if needed)…"}
+          <div style={{ marginLeft: "auto", opacity: 0.75, fontSize: 13 }}>{statusLine}</div>
         </div>
-
-        {errorMsg ? (
-          <div
-            style={{
-              marginTop: 12,
-              padding: 12,
-              borderRadius: 12,
-              background: "rgba(239,68,68,0.12)",
-              border: "1px solid rgba(239,68,68,0.25)",
-              color: "rgba(255,255,255,0.92)",
-              fontWeight: 800,
-              fontSize: 13,
-            }}
-          >
-            Supabase error: {errorMsg}
-          </div>
-        ) : null}
 
         {initialLoading && rows.length === 0 ? <div style={{ marginTop: 18 }}>Loading…</div> : null}
 
+        {/* Table */}
         {!initialLoading || rows.length > 0 ? (
           <div
             style={{
-              marginTop: 16,
+              marginTop: 14,
               borderRadius: 16,
               overflow: "hidden",
               border: "1px solid rgba(255,255,255,0.10)",
@@ -331,6 +329,35 @@ export default function InsidersPage() {
         ) : null}
       </div>
     </div>
+  );
+}
+
+function FilterPill({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        padding: "10px 12px",
+        borderRadius: 999,
+        border: active ? "1px solid rgba(255,255,255,0.32)" : "1px solid rgba(148,163,184,0.22)",
+        background: active ? "rgba(255,255,255,0.10)" : "rgba(255,255,255,0.04)",
+        color: "rgba(255,255,255,0.92)",
+        fontWeight: 950,
+        fontSize: 13,
+        cursor: "pointer",
+      }}
+    >
+      {label}
+    </button>
   );
 }
 
