@@ -20,9 +20,37 @@ type InsiderEvent = {
 
 type FilterKey = "ALL" | "BUY" | "SELL" | "USD_100K" | "USD_500K" | "USD_1M";
 
-function txLabel(code?: string | null) {
+function safeNum(x: number | null | undefined) {
+  return typeof x === "number" && !Number.isNaN(x) ? x : 0;
+}
+
+/**
+ * Fixes mismatched labels like:
+ * - transaction_code = "P"
+ * - shares/value are negative
+ *
+ * In that case we treat the visible type as SELL-like for display.
+ */
+function effectiveTxCode(row: InsiderEvent) {
+  const raw = String(row.transaction_code || "").toUpperCase().trim();
+  const shares = safeNum(row.shares);
+  const value = safeNum(row.value);
+
+  if ((raw === "P" || raw === "S" || !raw) && (shares < 0 || value < 0)) {
+    return "S";
+  }
+
+  if ((raw === "P" || raw === "S" || !raw) && (shares > 0 || value > 0)) {
+    return "P";
+  }
+
+  return raw || "—";
+}
+
+function txLabelFromCode(code?: string | null) {
   const c = (code || "").toUpperCase().trim();
-  if (!c) return "—";
+  if (!c || c === "—") return "—";
+
   switch (c) {
     case "P":
       return "Purchase";
@@ -43,9 +71,9 @@ function txLabel(code?: string | null) {
   }
 }
 
-function txBadge(code?: string | null) {
-  const c = (code || "").toUpperCase().trim();
-  const label = txLabel(c);
+function txBadgeForRow(row: InsiderEvent) {
+  const c = effectiveTxCode(row);
+  const label = txLabelFromCode(c);
 
   const isBuy = c === "P";
   const isSell = c === "S";
@@ -84,9 +112,13 @@ function num(x: number | null) {
   return Math.round(x).toLocaleString();
 }
 
+function absMoneyValue(x: number | null) {
+  return Math.abs(safeNum(x));
+}
+
 function meetsFilter(r: InsiderEvent, f: FilterKey) {
-  const code = String(r.transaction_code || "").toUpperCase().trim();
-  const v = Number(r.value ?? 0);
+  const code = effectiveTxCode(r);
+  const vAbs = absMoneyValue(r.value);
 
   switch (f) {
     case "BUY":
@@ -94,15 +126,43 @@ function meetsFilter(r: InsiderEvent, f: FilterKey) {
     case "SELL":
       return code === "S";
     case "USD_100K":
-      return v >= 100_000;
+      return vAbs >= 100_000;
     case "USD_500K":
-      return v >= 500_000;
+      return vAbs >= 500_000;
     case "USD_1M":
-      return v >= 1_000_000;
+      return vAbs >= 1_000_000;
     case "ALL":
     default:
       return true;
   }
+}
+
+/**
+ * Collapse obvious duplicates for display.
+ * This does NOT delete from DB — it only cleans the feed shown to users.
+ */
+function dedupeRows(rows: InsiderEvent[]) {
+  const seen = new Set<string>();
+  const out: InsiderEvent[] = [];
+
+  for (const r of rows) {
+    const key = [
+      (r.ticker || "").toUpperCase().trim(),
+      (r.insider_name || "").trim().toUpperCase(),
+      (r.transaction_date || "").trim(),
+      effectiveTxCode(r),
+      safeNum(r.shares),
+      safeNum(r.price),
+      safeNum(r.value),
+      (r.detail_url || "").trim(),
+    ].join("|");
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(r);
+  }
+
+  return out;
 }
 
 export default function InsidersPage() {
@@ -113,7 +173,6 @@ export default function InsidersPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<string | null>(null);
 
-  // search + filters
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<FilterKey>("ALL");
 
@@ -128,7 +187,6 @@ export default function InsidersPage() {
     if (isBackground) setRefreshing(true);
     else setInitialLoading(true);
 
-    // Must be logged in for RLS to allow rows
     const { data: sessionData } = await sb.auth.getSession();
     const user = sessionData.session?.user;
     if (!user) {
@@ -136,14 +194,16 @@ export default function InsidersPage() {
       return;
     }
 
+    // Pull more than 200 so we can de-duplicate before showing the final 200
     const { data, error } = await sb
       .from("insider_event")
       .select("*")
       .order("created_at", { ascending: false })
-      .limit(200);
+      .limit(500);
 
     if (!error && data) {
-      setRows(data as InsiderEvent[]);
+      const deduped = dedupeRows(data as InsiderEvent[]).slice(0, 200);
+      setRows(deduped);
       setLastUpdatedAt(new Date().toISOString());
     }
 
@@ -167,13 +227,13 @@ export default function InsidersPage() {
       const t = String(r.ticker || "").toLowerCase();
       const insider = String(r.insider_name || "").toLowerCase();
       const issuer = String(r.issuer_name || "").toLowerCase();
-      const tx = String(r.transaction_code || "").toLowerCase();
+      const tx = String(effectiveTxCode(r) || "").toLowerCase();
       return t.includes(q) || insider.includes(q) || issuer.includes(q) || tx.includes(q);
     });
 
   const statusLine = initialLoading
     ? "Loading…"
-    : `Showing ${filtered.length.toLocaleString()} of ${rows.length.toLocaleString()} events${
+    : `Showing ${filtered.length.toLocaleString()} of ${rows.length.toLocaleString()} unique events${
         refreshing ? " • Refreshing…" : ""
       }${lastUpdatedAt ? ` • Updated ${new Date(lastUpdatedAt).toLocaleTimeString()}` : ""}`;
 
@@ -197,7 +257,6 @@ export default function InsidersPage() {
           backdropFilter: "blur(8px)",
         }}
       >
-        {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <h1 style={{ fontSize: 38, fontWeight: 900, margin: 0, letterSpacing: -0.6 }}>Insider Activity</h1>
 
@@ -227,7 +286,6 @@ export default function InsidersPage() {
           </div>
         </div>
 
-        {/* Filters */}
         <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <FilterPill active={filter === "ALL"} onClick={() => setFilter("ALL")} label="All" />
           <FilterPill active={filter === "BUY"} onClick={() => setFilter("BUY")} label="Purchases" />
@@ -241,7 +299,6 @@ export default function InsidersPage() {
 
         {initialLoading && rows.length === 0 ? <div style={{ marginTop: 18 }}>Loading…</div> : null}
 
-        {/* Table */}
         {!initialLoading || rows.length > 0 ? (
           <div
             style={{
@@ -291,7 +348,7 @@ export default function InsidersPage() {
                         {r.issuer_name ? <div style={{ opacity: 0.7, fontSize: 12 }}>{r.issuer_name}</div> : null}
                       </td>
 
-                      <td style={tdStyle}>{txBadge(r.transaction_code)}</td>
+                      <td style={tdStyle}>{txBadgeForRow(r)}</td>
                       <td style={tdStyle}>{r.insider_name || "—"}</td>
                       <td style={tdStyle}>{r.transaction_date || "—"}</td>
                       <td style={{ ...tdStyle, textAlign: "right" }}>{num(r.shares)}</td>
